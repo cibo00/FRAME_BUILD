@@ -1,0 +1,41 @@
+@import './base.css';
+
+/* 1. 彻底移除 body 的居中限制 */
+body {
+  margin: 0;
+  padding: 0;
+  display: block; /* 覆盖原来的 flex */
+  min-height: 100vh;
+}
+
+/* 2. 重写 #app 容器：去掉 max-width 和 grid */
+#app {
+  width: 100vw;       /* 宽度占满视口 */
+  height: 100vh;      /* 高度占满视口 */
+  max-width: none;    /* 移除 1280px 限制 */
+  margin: 0;          /* 移除居中 */
+  padding: 0;         /* 移除内边距 */
+  display: flex;      /* 改为 flex 布局方便左右分栏 */
+  font-weight: normal;
+}
+
+/* 移除 1024px 以上的干扰样式 */
+@media (min-width: 1024px) {
+  body {
+    display: block;   /* 确保 body 不会把内容居中 */
+  }
+
+  #app {
+    display: flex;    /* 确保是左右布局而不是 grid */
+    grid-template-columns: none; /* 废除之前的 1fr 1fr */
+    padding: 0;
+  }
+}
+
+/* 保持原有链接颜色 */
+a, .green {
+  text-decoration: none;
+  color: hsla(160, 100%, 37%, 1);
+  transition: 0.4s;
+  padding: 3px;
+}
