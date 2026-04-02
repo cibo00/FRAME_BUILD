@@ -8,7 +8,9 @@ import { onMounted, watch } from 'vue'
 const props = defineProps<{
   scenesData: any[],
   onSave: () => void,           // 保存函数
-  isSaving: boolean             // 保存状态
+  isSaving: boolean,            // 保存状态
+  onFetchNext?: () => void,     // 获取下一组
+  onUploadResult?: () => void,  // 上传结果
 }>()
 
 const ACTIVE_INDEX_KEY = 'frame_build_active_scene_index_v1'
@@ -90,12 +92,30 @@ watch(() => props.scenesData, (newVal) => {
   <div class="side-panel">
     <div class="controls-column">
       <h2>工作区</h2>
-      <button 
-        @click="props.onSave" 
+      <button
+        @click="props.onSave"
         :disabled="props.isSaving || props.scenesData.length === 0"
         class="save-button"
       >
         {{ props.isSaving ? '正在打包...' : '保存点数据' }}
+      </button>
+
+      <button
+        v-if="props.onFetchNext"
+        @click="props.onFetchNext"
+        :disabled="props.scenesData.length === 0"
+        class="action-button"
+      >
+        获取下一组
+      </button>
+
+      <button
+        v-if="props.onUploadResult"
+        @click="props.onUploadResult"
+        :disabled="props.scenesData.length === 0"
+        class="action-button"
+      >
+        上传结果
       </button>
 
       <div class="pagination">
@@ -157,6 +177,24 @@ watch(() => props.scenesData, (newVal) => {
     background-color: #0056b3;
 }
 .save-button:disabled {
+    background-color: #cccccc;
+    cursor: not-allowed;
+}
+.action-button {
+    margin-bottom: 8px;
+    padding: 8px 20px;
+    background-color: #28a745;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    width: 100%;
+    transition: background-color 0.3s;
+}
+.action-button:hover:not(:disabled) {
+    background-color: #1e7e34;
+}
+.action-button:disabled {
     background-color: #cccccc;
     cursor: not-allowed;
 }

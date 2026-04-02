@@ -840,6 +840,90 @@ async function fetchNextDataBatch(force = false) {
   }
 }
 
+// ---- 数据列表相关 ----
+interface DataGroupInfo {
+  groupId: string;
+  imageCount: number;
+  filename: string;
+}
+
+const dataList = ref<DataGroupInfo[]>([]);
+const isRefreshing = ref(false);
+const selectedGroupId = ref<string | null>(null);
+
+// 获取数据列表
+async function fetchDataList() {
+  try {
+    const response = await api.get('/api/data-list');
+    if (Array.isArray(response.data)) {
+      dataList.value = response.data as DataGroupInfo[];
+    }
+  } catch (error) {
+    console.warn('[App] 获取数据列表失败:', error);
+  }
+}
+
+// 点击数据列表某一行，加载该组数据
+async function loadDataByGroupId(groupId: string) {
+  isLoading.value = true;
+  errorMessage.value = '';
+  selectedGroupId.value = groupId;
+  try {
+    const response = await api.get('/api/data-by-id', { params: { id: groupId } });
+    const apiData = response.data as ApiResponse;
+    if (!apiData || !Array.isArray(apiData.images)) {
+      throw new Error('返回的数据格式不正确');
+    }
+
+    const newScenes = [];
+    let initialPositions: ScenePoint[] = [];
+    let initialBezierPoints: ScenePoint[] = [];
+
+    for (const imageWithMeta of apiData.images) {
+      const scene = transformOutputData(apiData.outputData, imageWithMeta);
+      if (newScenes.length === 0) {
+        initialPositions = scene.positions || [];
+        initialBezierPoints = scene.bezierPoints || [];
+      }
+      newScenes.push(scene);
+    }
+
+    sharedPointsState.positions = initialPositions.map(p => ({ ...p }));
+    sharedPointsState.bezierPoints = initialBezierPoints.map(p => ({ ...p }));
+
+    newScenes.forEach(scene => {
+      delete scene.positions;
+      delete scene.bezierPoints;
+    });
+
+    scenesData.value = newScenes;
+    console.log(`[App] 已加载数据组: ${groupId}`);
+  } catch (error: any) {
+    errorMessage.value = error.message || '加载数据失败';
+    console.error('[App] 加载数据组失败:', error);
+  } finally {
+    isLoading.value = false;
+  }
+}
+
+// 刷新：后端重新读取文件夹并返回新列表
+async function refreshDataList() {
+  isRefreshing.value = true;
+  errorMessage.value = '';
+  try {
+    const response = await api.post('/api/refresh-data');
+    if (Array.isArray(response.data)) {
+      dataList.value = response.data as DataGroupInfo[];
+      console.log('[App] 数据列表已刷新，共', dataList.value.length, '组');
+    }
+  } catch (error: any) {
+    errorMessage.value = error.message || '刷新失败';
+    console.error('[App] 刷新数据失败:', error);
+  } finally {
+    isRefreshing.value = false;
+  }
+}
+
 // 可选的预加载函数
 function preloadImages(urls: string[]) {
   const promises = urls.map((url: string) => {
@@ -911,6 +995,9 @@ onMounted(() => {
   } else {
     console.log('检测到本地恢复，跳过页面挂载时的自动后端拉取。');
   }
+
+  // 挂载时拉取数据列表（不依赖登录）
+  fetchDataList();
 })
 
 const triggerFileUpload = () => {
@@ -984,28 +1071,39 @@ const uploadVideo = async (fileObject:any) => {
 <template>
   <div class="main-layout">
     <div class="auth-sidebar">
-      <div class="auth-section">
-        <h3>管理区</h3>
-        <div class="compact-form">
-          <input v-model="login_data[0].username" placeholder="用户名" />
-          <input v-model="login_data[0].password" type="password" placeholder="密码" />
-          <button @click="test_login(login_data[0].username, login_data[0].password)">登录</button>
+      <div class="data-section">
+        <div class="data-header">
+          <h3>管理区</h3>
+          <button class="refresh-btn" @click="refreshDataList" :disabled="isRefreshing">
+            {{ isRefreshing ? '刷新中...' : '刷新' }}
+          </button>
         </div>
-      </div>
-
-      <div class="upload-section">
-        <button @click="fetchNextDataBatch(true)">获取下一组</button>
-        <button @click="Save_Building_Result">上传结果</button>
         <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
+        <div class="data-list" v-if="dataList.length > 0">
+          <div
+            v-for="item in dataList"
+            :key="item.groupId"
+            class="data-list-item"
+            :class="{ active: selectedGroupId === item.groupId }"
+            @click="loadDataByGroupId(item.groupId)"
+          >
+            <span class="item-id">{{ item.groupId }}</span>
+            <span class="item-meta">{{ item.filename || item.groupId }} ({{ item.imageCount }}张)</span>
+          </div>
+        </div>
+        <div v-else-if="isLoading" class="list-loading">加载中...</div>
+        <div v-else class="list-empty">暂无数据</div>
       </div>
     </div>
 
     <div class="main-content">
-      <SidePanel 
+      <SidePanel
         v-if="scenesData.length > 0"
-        :scenesData="scenesData" 
-        :onSave="saveAllPointsData" 
+        :scenesData="scenesData"
+        :onSave="saveAllPointsData"
         :isSaving="isSaving"
+        :onFetchNext="() => fetchNextDataBatch(true)"
+        :onUploadResult="Save_Building_Result"
       />
       <div v-else-if="isLoading" class="loading">场景加载中...</div>
     </div>
@@ -1032,34 +1130,99 @@ const uploadVideo = async (fileObject:any) => {
 
 /* 左侧栏：压缩空间 */
 .auth-sidebar {
-  flex: 0 0 220px; /* 固定宽度 220px，不拉伸 */
+  flex: 0 0 220px;
   background: #f8f9fa;
   border-right: 1px solid #ddd;
   padding: 15px;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 10px;
   z-index: 10;
+  overflow: hidden;
 }
 
 /* 右侧内容区：扩张空间 */
 .main-content {
-  flex: 1; /* 占据所有剩余空间 */
+  flex: 1;
   height: 100%;
   position: relative;
 }
 
-/* 压缩登录框样式 */
-.compact-form input {
-  width: 100%;
-  margin-bottom: 8px;
-  padding: 6px;
-  font-size: 12px;
+/* 数据区整体 */
+.data-section {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
 }
-.compact-form button, .upload-section button {
-  width: 100%;
-  padding: 8px;
-  margin-top: 5px;
+
+.data-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.data-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.refresh-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: #17a2b8;
+  color: white;
+  border: none;
+  border-radius: 4px;
   cursor: pointer;
+}
+.refresh-btn:hover:not(:disabled) { background: #138496; }
+.refresh-btn:disabled { background: #ccc; cursor: not-allowed; }
+
+/* 数据列表 */
+.data-list {
+  flex: 1;
+  overflow-y: auto;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.data-list-item {
+  padding: 8px 10px;
+  border-bottom: 1px solid #eee;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: background 0.15s;
+}
+.data-list-item:last-child { border-bottom: none; }
+.data-list-item:hover { background: #e9f5ff; }
+.data-list-item.active { background: #cce5ff; }
+
+.item-id {
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+}
+.item-meta {
+  font-size: 11px;
+  color: #666;
+}
+
+.list-loading, .list-empty {
+  padding: 12px;
+  font-size: 12px;
+  color: #888;
+  text-align: center;
+}
+
+.error {
+  font-size: 11px;
+  color: #dc3545;
+  margin: 4px 0;
 }
 </style>

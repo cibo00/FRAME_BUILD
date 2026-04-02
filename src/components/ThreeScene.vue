@@ -672,9 +672,42 @@ function initAdArcFromProps() {
   }
 }
 
+// 刷新所有球体/贝塞尔点的显示位置（应用当前 XY 旋转）
+function refreshSphereDisplayPositions() {
+  sharedPointsState.positions.forEach((pos, i) => {
+    if (spheres[i]) {
+      const dp = applyXYRotToPoint(Number(pos.x), Number(pos.y), Number(pos.z))
+      spheres[i].position.copy(dp)
+      if (sphereLabels[i]) {
+        sphereLabels[i].position.copy(computeLabelPosition(spheres[i].position))
+        const line = sphereLabelLines[i]
+        if (line) {
+          ;(line.geometry as THREE.BufferGeometry).setFromPoints([spheres[i].position.clone(), sphereLabels[i].position.clone()])
+          line.geometry.attributes.position.needsUpdate = true
+        }
+      }
+    }
+  })
+  sharedPointsState.bezierPoints.forEach((pos, i) => {
+    if (bezier_points[i]) {
+      const dp = applyXYRotToPoint(Number(pos.x), Number(pos.y), Number(pos.z))
+      bezier_points[i].position.copy(dp)
+      if (bezierLabels[i]) {
+        bezierLabels[i].position.copy(computeLabelPosition(bezier_points[i].position))
+        const bLine = bezierLabelLines[i]
+        if (bLine) {
+          ;(bLine.geometry as THREE.BufferGeometry).setFromPoints([bezier_points[i].position.clone(), bezierLabels[i].position.clone()])
+          bLine.geometry.attributes.position.needsUpdate = true
+        }
+      }
+    }
+  })
+}
+
 function onParameterChange() {
   sharedPointsState.xyRotation = xyRotationValue.value
   sharedPointsState.aTangent = aTangentValue.value
+  refreshSphereDisplayPositions()
   regenerateNailModel()
 }
 
@@ -1316,6 +1349,22 @@ function removeBezierPoint(idx: number) {
 // 辅助函数：将角度转换为弧度
 function degToRad(degrees: number): number {
     return degrees * (Math.PI / 180);
+}
+
+// 将单个点按当前 xyRotation 旋转后返回显示位置
+function applyXYRotToPoint(x: number, y: number, z: number): THREE.Vector3 {
+    const angle = xyRotationValue.value;
+    if (Math.abs(angle) < 1e-12) return new THREE.Vector3(x, y, z);
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -angle);
+    return new THREE.Vector3(x, y, z).applyQuaternion(q);
+}
+
+// 将单个 THREE.Vector3（显示坐标）逆旋转回原始数据坐标
+function applyXYRotInverse(v: THREE.Vector3): THREE.Vector3 {
+    const angle = xyRotationValue.value;
+    if (Math.abs(angle) < 1e-12) return v.clone();
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), angle); // 反向
+    return v.clone().applyQuaternion(q);
 }
 
 // 辅助函数：旋转向量 (对应 _rotate_vector)
@@ -2001,13 +2050,6 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
 
     //console.log(`A_end_points size: "${A_end_points.length}",D_end_points size: "${D_end_points.length}" `);
 
-    // ---- XY 旋转辅助（对应 Python _apply_final_xy_rotation，绕 Z 轴旋转）----
-    const _xyRotAngle = xyRotationValue.value;
-    function applyXYRot(pts: THREE.Vector3[]): THREE.Vector3[] {
-        if (Math.abs(_xyRotAngle) < 1e-12) return pts;
-        const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -_xyRotAngle);
-        return pts.map(p => p.clone().applyQuaternion(q));
-    }
 
     // ---- AGH/JDI 侧轮廓填充曲面（对应 Python _filling_surface 新算法）----
     // 坐标系转换：侧轮廓本地偏移 (rx=宽度方向, ry=高度Z方向)
@@ -2062,8 +2104,9 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
 
     // 裁剪 AGH/JDI 填充曲面至 ABCDEF 多边形范围（对应 Python _cut_end_surface）
     const clipped_AGH_JDI = cutEndSurface(AGH_JDI_pts, edge_points);
-    // 三段合并：A 根部端盖 + D 尖部端盖 + 裁剪后的 AGH/JDI 中段，再应用 XY 旋转
-    const toSamplePoints = applyXYRot([...clipped_AGH_JDI]);
+    // 三段合并：A 根部端盖 + D 尖部端盖 + 裁剪后的 AGH/JDI 中段
+    // 输入 mesh 位置已旋转，无需再次旋转
+    const toSamplePoints = [...A_end_points,...D_end_points,...clipped_AGH_JDI];
 
     allMeshPointsForExport.value = toSamplePoints;
 
@@ -2101,7 +2144,7 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
             // 使用自定义的 BezierCurve 类来创建曲线
             const customCurve = new BezierCurve(controlPointVectors);
 
-            // 生成点并渲染（与旧函数逻辑相同）
+            // 生成点并渲染
             const points = customCurve.getPoints(100);
             const curveGeometry = new THREE.BufferGeometry().setFromPoints(points);
             const curveMaterial = new THREE.LineBasicMaterial({ color: 0xff00ff }); // 紫色
@@ -2243,11 +2286,12 @@ onMounted(() => {
       // 判断被拖拽的物体是球体还是贝塞尔点
       const sphereIndex = spheres.findIndex(s => s === draggedObject);
       if (sphereIndex !== -1) {
-        // 如果是球体，更新 positions 数据
+        // 球体位置是旋转后的显示坐标，逆旋转还原为原始数据坐标再保存
+        const origPos = applyXYRotInverse(draggedObject.position);
         const positionData =  sharedPointsState.positions[sphereIndex];
-        positionData.x = draggedObject.position.x;
-        positionData.y = draggedObject.position.y;
-        positionData.z = draggedObject.position.z;
+        positionData.x = origPos.x;
+        positionData.y = origPos.y;
+        positionData.z = origPos.z;
         // 持久化状态
         saveStateToLocalStorage();
         return; // 更新完毕，退出函数
@@ -2255,11 +2299,12 @@ onMounted(() => {
 
       const bezierIndex = bezier_points.findIndex(p => p === draggedObject);
       if (bezierIndex !== -1) {
-        // 如果是贝塞尔点，更新 bezierPoints 数据
+        // 贝塞尔点位置是旋转后的显示坐标，逆旋转还原为原始数据坐标再保存
+        const origBPos = applyXYRotInverse(draggedObject.position);
         const pointData =  sharedPointsState.bezierPoints[bezierIndex];
-        pointData.x = draggedObject.position.x;
-        pointData.y = draggedObject.position.y;
-        pointData.z = draggedObject.position.z;
+        pointData.x = origBPos.x;
+        pointData.y = origBPos.y;
+        pointData.z = origBPos.z;
 
         // ⭐ 新增：对称点移动逻辑
         // 定义对称关系：[点1名称, 中心点名称, 点2名称]
@@ -2301,10 +2346,11 @@ onMounted(() => {
                 symmetricPointData.y = newSymmetricY;
                 symmetricPointData.z = newSymmetricZ;
 
-                // 同时更新3D场景中对称点的位置
+                // 同时更新3D场景中对称点的位置（需要应用 XY 旋转）
                 const symmetricBezierIndex = sharedPointsState.bezierPoints.findIndex(p => p.name === symmetricPointName);
                 if (symmetricBezierIndex !== -1 && bezier_points[symmetricBezierIndex]) {
-                  bezier_points[symmetricBezierIndex].position.set(newSymmetricX, newSymmetricY, newSymmetricZ);
+                  const symDisplayPos = applyXYRotToPoint(newSymmetricX, newSymmetricY, newSymmetricZ);
+                  bezier_points[symmetricBezierIndex].position.copy(symDisplayPos);
 
                   // 更新对称点的标签位置
                   if (bezierLabels[symmetricBezierIndex]) {
@@ -2555,7 +2601,9 @@ watch(
     if (!isDragging.value) {
        sharedPointsState.positions.forEach((pos, i) => {
         if (spheres[i]) {
-          spheres[i].position.set(Number(pos.x), Number(pos.y), Number(pos.z));
+          // 应用 XY 旋转，使 ABCDEF 点随模型一起旋转
+          const displayPos = applyXYRotToPoint(Number(pos.x), Number(pos.y), Number(pos.z));
+          spheres[i].position.copy(displayPos);
           if(sphereLabels[i]) {
             sphereLabels[i].position.copy(computeLabelPosition(spheres[i].position));
             const line = sphereLabelLines[i];
@@ -2606,7 +2654,9 @@ watch(
     if (!isDragging.value) {
        sharedPointsState.bezierPoints.forEach((pos, i) => {
         if (bezier_points[i]) {
-          bezier_points[i].position.set(Number(pos.x), Number(pos.y), Number(pos.z));
+          // 应用 XY 旋转
+          const displayPos = applyXYRotToPoint(Number(pos.x), Number(pos.y), Number(pos.z));
+          bezier_points[i].position.copy(displayPos);
           if(bezierLabels[i]) {
             bezierLabels[i].position.copy(computeLabelPosition(bezier_points[i].position));
             const bLine = bezierLabelLines[i];
@@ -2857,20 +2907,20 @@ watch(
         <label style="font-weight: bold; color: #333; margin-bottom: 8px; display: block;">侧轮廓参数控制</label>
         
         <div style="margin-top: 8px;">
-          <label>XY Rotation: {{ (xyRotationValue * 180 / Math.PI).toFixed(1) }}°</label>
+          <label>XY Rotation: {{ (xyRotationValue * 180 / Math.PI).toFixed(5) }}°</label>
           <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
             <input
               type="range"
               min="-180"
               max="180"
-              step="0.1"
+              step="0.00001"
               :value="(xyRotationValue * 180 / Math.PI)"
               @input="handleXyRotationInput"
-              style="flex: 1;"
+              style="flex: 5;"
             />
             <input
               type="number"
-              :value="(xyRotationValue * 180 / Math.PI).toFixed(1)"
+              :value="(xyRotationValue * 180 / Math.PI).toFixed(5)"
               @input="handleXyRotationInput"
               style="width:80px;"
             />
@@ -2879,20 +2929,20 @@ watch(
         </div>
 
         <div style="margin-top: 12px;">
-          <label>A Tangent: {{ (aTangentValue * 180 / Math.PI).toFixed(1) }}°</label>
+          <label>A Tangent: {{ (aTangentValue * 180 / Math.PI).toFixed(5) }}°</label>
           <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
             <input
               type="range"
               min="0"
               max="90"
-              step="0.1"
+              step="0.00001"
               :value="(aTangentValue * 180 / Math.PI)"
               @input="handleATangentInput"
               style="flex: 1;"
             />
             <input
               type="number"
-              :value="(aTangentValue * 180 / Math.PI).toFixed(1)"
+              :value="(aTangentValue * 180 / Math.PI).toFixed(5)"
               @input="handleATangentNumberInput"
               style="width:80px;"
             />

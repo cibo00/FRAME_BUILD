@@ -94,6 +94,15 @@ function updateTipProfile() {
 
   const pointNames = ['I', 'J', 'D_P1_I', 'D_P1_J', 'D']
 
+  // 每个点的标签偏移量，使标签向各自所在方向散开避免重叠
+  const labelOffsets: Record<string, { dx: number; dy: number }> = {
+    'I':      { dx:  2.0, dy: -1.5 }, // 右下
+    'J':      { dx: -2.0, dy: -1.5 }, // 左下
+    'D_P1_I': { dx:  2.0, dy:  1.5 }, // 右上
+    'D_P1_J': { dx: -2.0, dy:  1.5 }, // 左上
+    'D':      { dx:  0.0, dy:  1.8 }, // 正上方
+  }
+
   pointNames.forEach(pointName => {
     const pointData = props.tipSidePoints.find(p => p.name === pointName)
     if (!pointData) return
@@ -105,12 +114,15 @@ function updateTipProfile() {
     const sphere = new THREE.Mesh(geometry, material)
     sphere.position.set(pointData.x, pointData.y, pointData.z)
     sphere.userData.pointName = pointName
+    const off = labelOffsets[pointName] ?? { dx: 0, dy: 1.2 }
+    sphere.userData.labelOffsetX = off.dx
+    sphere.userData.labelOffsetY = off.dy
 
     sceneRef.add(sphere)
     draggableObjects.push(sphere)
 
     const label = createTextLabel(pointName)
-    label.position.set(pointData.x, pointData.y + 0.8, pointData.z)
+    label.position.set(pointData.x + off.dx, pointData.y + off.dy, pointData.z)
     sceneRef.add(label)
     pointLabels.push(label)
   })
@@ -184,7 +196,7 @@ function createTextLabel(text: string): THREE.Sprite {
   context.fillRect(0, 0, canvas.width, canvas.height)
 
   context.font = 'Bold 48px Arial'
-  context.fillStyle = 'white'
+  context.fillStyle = 'black'
   context.textAlign = 'center'
   context.fillText(text, 128, 64)
 
@@ -214,9 +226,11 @@ function setupDragControls() {
 
     const labelIndex = draggableObjects.indexOf(object)
     if (pointLabels[labelIndex]) {
+      const ox = object.userData.labelOffsetX ?? 0
+      const oy = object.userData.labelOffsetY ?? 1.2
       pointLabels[labelIndex].position.set(
-        object.position.x,
-        object.position.y + 0.5,
+        object.position.x + ox,
+        object.position.y + oy,
         object.position.z
       )
     }
