@@ -1,6 +1,6 @@
 /**
  * OperationManager - 操作管理器
- * 负责管理心跳检测和临时操作保存功能
+ * 负责管理临时操作保存功能
  */
 
 import { api } from '@/api';
@@ -14,38 +14,18 @@ export interface OperationData {
 }
 
 export class OperationManager {
-  private sessionToken: string;
-  private heartbeatInterval: number | null = null;
   private isActive: boolean = true;
-  private heartbeatIntervalMs: number = 30000; // 30秒
 
   constructor(sessionToken: string) {
-    this.sessionToken = sessionToken;
+    // sessionToken 参数保留兼容，不再使用
   }
 
   /**
    * 验证 session token 是否有效
-   * @returns 返回 token 是否有效
+   * @returns 始终返回 true（无需验证）
    */
   async validateToken(): Promise<boolean> {
-    try {
-      const response = await api.get('/api/validate-session', {
-        headers: {
-          'Authorization': `Bearer ${this.sessionToken}`
-        }
-      });
-
-      if (response.status === 200 && response.data.valid) {
-        console.log('[OperationManager] Session Token 验证成功');
-        return true;
-      } else {
-        console.log('[OperationManager] Session Token 无效');
-        return false;
-      }
-    } catch (error) {
-      console.error('[OperationManager] Session Token 验证失败:', error);
-      return false;
-    }
+    return true;
   }
 
   /**
@@ -55,65 +35,9 @@ export class OperationManager {
   async init(): Promise<OperationData | null> {
     console.log('[OperationManager] 初始化操作管理器');
 
-    // 启动心跳检测
-    this.startHeartbeat();
-
     // 恢复临时操作
     const savedData = await this.restoreTempOperation();
     return savedData;
-  }
-
-  /**
-   * 启动心跳检测
-   * 每30秒发送一次心跳
-   */
-  startHeartbeat(): void {
-    // 清除之前的定时器（如果存在）
-    if (this.heartbeatInterval !== null) {
-      clearInterval(this.heartbeatInterval);
-    }
-
-    // 立即发送一次心跳
-    this.sendHeartbeat();
-
-    // 设置定时器
-    this.heartbeatInterval = window.setInterval(() => {
-      this.sendHeartbeat();
-    }, this.heartbeatIntervalMs);
-
-    console.log('[OperationManager] 心跳检测已启动');
-  }
-
-  /**
-   * 发送心跳请求
-   */
-  private async sendHeartbeat(): Promise<void> {
-    if (!this.isActive) return;
-
-    try {
-      const response = await api.post('/api/heartbeat', {}, {
-        headers: {
-          'Authorization': `Bearer ${this.sessionToken}`
-        }
-      });
-
-      if (response.status === 200) {
-        console.log('[OperationManager] 心跳发送成功');
-      }
-    } catch (error) {
-      console.error('[OperationManager] 心跳请求错误:', error);
-    }
-  }
-
-  /**
-   * 停止心跳检测
-   */
-  stopHeartbeat(): void {
-    if (this.heartbeatInterval !== null) {
-      clearInterval(this.heartbeatInterval);
-      this.heartbeatInterval = null;
-      console.log('[OperationManager] 心跳检测已停止');
-    }
   }
 
   /**
@@ -126,12 +50,7 @@ export class OperationManager {
 
       try {
         const response = await api.post('/api/temp-operation/save', {
-          session_token: this.sessionToken,
           operation_data: operationData
-        }, {
-          headers: {
-            'Authorization': `Bearer ${this.sessionToken}`
-          }
         });
 
         if (response.status === 200) {
@@ -158,11 +77,7 @@ export class OperationManager {
    */
   async restoreTempOperation(): Promise<OperationData | null> {
     try {
-      const response = await api.get('/api/temp-operation/get', {
-        headers: {
-          'Authorization': `Bearer ${this.sessionToken}`
-        }
-      });
+      const response = await api.get('/api/temp-operation/get');
 
       if (response.status === 200 && response.data.operation_data) {
         console.log('[OperationManager] 已恢复临时操作');
@@ -183,11 +98,7 @@ export class OperationManager {
    */
   async clearTempOperation(): Promise<boolean> {
     try {
-      const response = await api.delete('/api/temp-operation/clear', {
-        headers: {
-          'Authorization': `Bearer ${this.sessionToken}`
-        }
-      });
+      const response = await api.delete('/api/temp-operation/clear');
 
       if (response.status === 200) {
         console.log('[OperationManager] 临时操作已清除');
@@ -205,7 +116,6 @@ export class OperationManager {
    */
   destroy(): void {
     this.isActive = false;
-    this.stopHeartbeat();
     console.log('[OperationManager] 操作管理器已销毁');
   }
 

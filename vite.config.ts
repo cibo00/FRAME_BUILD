@@ -14,13 +14,26 @@ export default defineConfig({
   ],
   server: {
     proxy: {
-      // 当你访问 /static 时，Vite 会自动转发到 8080 端口
       '/static': {
         target: 'http://localhost:8080',
         changeOrigin: true,
-        // 如果后端接口没有 /static 前缀，可以用 rewrite 去掉它
-        // rewrite: (path) => path.replace(/^\/static/, '')
-      }
+      },
+      '/api': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/Login': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/Register': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/next-image': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
     }
   },
   resolve: {

@@ -175,21 +175,7 @@ async function initOperationManager(token: string) {
     // 创建操作管理器实例
     operationManager = new OperationManager(token);
 
-    // 首先验证 session token 是否有效
-    console.log('[App] 验证 session token...');
-    const isValid = await operationManager.validateToken();
-
-    if (!isValid) {
-      // Token 无效，清除所有数据
-      console.log('[App] Session Token 无效，清除所有数据');
-      localStorage.removeItem('session_token');
-      clearAllLocalStorageData();
-      errorMessage.value = 'Session 已过期，请重新登录';
-      operationManager = null;
-      return;
-    }
-
-    console.log('[App] Session Token 有效，继续初始化');
+    console.log('[App] 操作管理器初始化成功');
 
     // 初始化并尝试恢复临时操作
     const savedData = await operationManager.init();
@@ -549,8 +535,8 @@ function transformOutputData(outputData: OutputData, imageWithMeta: ImageWithMet
         const p = outputData[key];
 
         // 使用 "类型守卫" 来确保 p 是一个数组，这会消除 TypeScript 错误
-        if (Array.isArray(p) && p.length >= 3) {
-            allPoints[key] = { x: p[0], y: p[1], z: p[2] };
+        if (Array.isArray(p) && p.length >= 2) {
+            allPoints[key] = { x: p[0], y: p[1], z: p.length >= 3 ? p[2] : 0 };
         }
         
     }
@@ -689,15 +675,28 @@ function saveAllPointsData() {
 }
 
 
-async function fetchNextDataBatch(force = false) {
-  // 检查是否已登录
-  const token = localStorage.getItem('session_token');
-  if (!token) {
-    errorMessage.value = '请先登录后再获取数据';
-    console.warn('[App] 未登录，无法获取数据');
-    return;
+// 仅从后端获取参数（xy_rotation、A_tangent 等），不覆盖已有的 positions/bezierPoints/scenes
+async function fetchAndUpdateParams() {
+  try {
+    const response = await api.get('/api/next-three-image-and-data');
+    const apiData = response.data as ApiResponse;
+    if (apiData.outputData) {
+      const od = apiData.outputData as any;
+      if (typeof od['xy_rotation'] === 'number') {
+        sharedPointsState.xyRotation = od['xy_rotation'];
+        console.log('[App] fetchAndUpdateParams: xyRotation =', od['xy_rotation']);
+      }
+      if (typeof od['A_tangent'] === 'number') {
+        sharedPointsState.aTangent = od['A_tangent'];
+        console.log('[App] fetchAndUpdateParams: aTangent =', od['A_tangent']);
+      }
+    }
+  } catch (e) {
+    console.warn('[App] fetchAndUpdateParams failed:', e);
   }
+}
 
+async function fetchNextDataBatch(force = false) {
   isLoading.value = true;
   errorMessage.value = '';
 
@@ -750,6 +749,21 @@ async function fetchNextDataBatch(force = false) {
             sharedPointsState.positions = initialPositions.map(p => ({ ...p }));
             sharedPointsState.bezierPoints = initialBezierPoints.map(p => ({ ...p }));
             console.log("✅ 全局共享点数据已初始化。");
+        }
+
+        // 始终从后端 outputData 更新可选参数（不受 localStorage 缓存影响）
+        if (apiData.outputData) {
+          const od = apiData.outputData as any;
+          console.log('[App] outputData keys:', Object.keys(od));
+          console.log('[App] xy_rotation:', od['xy_rotation'], 'A_tangent:', od['A_tangent']);
+          if (typeof od['xy_rotation'] === 'number') {
+            sharedPointsState.xyRotation = od['xy_rotation'];
+            console.log('[App] Set sharedPointsState.xyRotation =', od['xy_rotation']);
+          }
+          if (typeof od['A_tangent'] === 'number') {
+            sharedPointsState.aTangent = od['A_tangent'];
+            console.log('[App] Set sharedPointsState.aTangent =', od['A_tangent']);
+          }
         }
 
         // 3. 清理局部场景数据
@@ -964,16 +978,10 @@ function preloadImages(urls: string[]) {
 
 // 页面挂载时自动获取图片
 onMounted(() => {
-  // 检查是否已登录
-  const token = localStorage.getItem('session_token');
-  if (token) {
-    // 如果已登录，初始化操作管理器
-    initOperationManager(token).then(() => {
-      console.log('[App] 操作管理器初始化完成');
-    });
-  } else {
-    console.log('[App] 未登录，跳过操作管理器初始化');
-  }
+  // 直接初始化操作管理器（无需登录）
+  initOperationManager('default_token').then(() => {
+    console.log('[App] 操作管理器初始化完成');
+  });
 
   // 优先尝试加载本地持久化的场景状态，避免刷新时被后端覆盖
   try {
@@ -1013,12 +1021,12 @@ onMounted(() => {
   // 说明：如果已有本地恢复（haveLocalRestore），则不在页面刷新时自动拉取后端数据，
   // 只有用户点击"获取下一组"按钮时才会触发 `fetchNextDataBatch()`。
   // 同时，只有在已登录的情况下才会自动拉取后端数据
-  if (!haveLocalRestore && token) {
+  if (!haveLocalRestore) {
     fetchNextDataBatch();
-  } else if (!token) {
-    console.log('未登录，跳过页面挂载时的自动后端拉取。');
   } else {
-    console.log('检测到本地恢复，跳过页面挂载时的自动后端拉取。');
+    console.log('检测到本地恢复，跳过页面挂载时的自动后端拉取，仅更新参数。');
+    // 即使有本地缓存，也从后端获取 xy_rotation 和 A_tangent 等参数
+    fetchAndUpdateParams();
   }
 
   // 挂载时拉取数据列表（不依赖登录）

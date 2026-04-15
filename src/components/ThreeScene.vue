@@ -232,9 +232,57 @@ const tipSidePoints = vueRef<ScenePoint[]>([
   { name: 'D',     x:  0.0, y:  0.0, z: 0 }  // 中心基座点
 ])
 
+// 从 sharedPointsState 的 bezierPoints 中同步 G/H/I/J 等侧轮廓点到 rootSidePoints/tipSidePoints
+function syncSidePointsFromBezierPoints() {
+  const bp = sharedPointsState.bezierPoints;
+  if (!bp || bp.length === 0) return;
+
+  // 更新 rootSidePoints (G, A_P1_G, A, A_P1_H, H)
+  for (const sp of rootSidePoints.value) {
+    const found = bp.find((p: any) => p.name === sp.name);
+    if (found) {
+      sp.x = found.x;
+      sp.y = found.y;
+      sp.z = found.z;
+    }
+  }
+
+  // 更新 tipSidePoints (J, D_P1_J, D, D_P1_I, I)
+  for (const sp of tipSidePoints.value) {
+    const found = bp.find((p: any) => p.name === sp.name);
+    if (found) {
+      sp.x = found.x;
+      sp.y = found.y;
+      sp.z = found.z;
+    }
+  }
+}
+syncSidePointsFromBezierPoints();
+
+// 监听 bezierPoints 变化，自动同步侧轮廓点
+watch(() => sharedPointsState.bezierPoints, () => {
+  syncSidePointsFromBezierPoints();
+}, { deep: true });
+
 // 新增：参数控制
 const xyRotationValue = vueRef(sharedPointsState.xyRotation || 0.0)
 const aTangentValue = vueRef(sharedPointsState.aTangent || Math.PI / 10)
+
+// 监听 sharedPointsState 中的 xyRotation 和 aTangent 变化
+watch(() => sharedPointsState.xyRotation, (val) => {
+  if (typeof val === 'number') {
+    console.log('[ThreeScene] xyRotation updated from store:', val, '-> degrees:', val * 180 / Math.PI);
+    xyRotationValue.value = val;
+    try { regenerateNailModel(); } catch(e) {}
+  }
+});
+watch(() => sharedPointsState.aTangent, (val) => {
+  if (typeof val === 'number') {
+    console.log('[ThreeScene] aTangent updated from store:', val, '-> degrees:', val * 180 / Math.PI);
+    aTangentValue.value = val;
+    try { regenerateNailModel(); } catch(e) {}
+  }
+});
 
 const str_point = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 const containerRef = vueRef<HTMLElement | null>(null) // 使用 ref 引用容器
