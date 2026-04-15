@@ -29,6 +29,7 @@ const errorMessage = ref('');
 interface Metadata {
   image_filename: string;
   instance_rotation_euler_degrees: number[];
+  quaternion?: number[];
 }
 
 interface ImageWithMetadata {
@@ -593,12 +594,22 @@ function transformOutputData(outputData: OutputData, imageWithMeta: ImageWithMet
         }
     }
 
-    // 4. 返回最终的、可以直接给ThreeScene使用的数据对象
+    // 4. 计算相机旋转：优先使用四元数（直接传递），回退到欧拉角
+    let cameraRotation: number[];
+    const meta = imageWithMeta.metadata;
+    if (meta.quaternion && meta.quaternion.length === 4) {
+        // 直接传递四元数，由 ThreeScene 内部转换并应用变换
+        cameraRotation = meta.quaternion;
+    } else {
+        cameraRotation = meta.instance_rotation_euler_degrees;
+    }
+
+    // 5. 返回最终的、可以直接给ThreeScene使用的数据对象
     return {
         positions: processedPositions,
         bezierPoints: processedBezierPoints,
         backgroundImage: imageWithMeta.imageUrl,
-        cameraRotation: imageWithMeta.metadata.instance_rotation_euler_degrees,
+        cameraRotation: cameraRotation,
         AD_arc: typeof outputData['AD_arc'] === 'number' ? (outputData['AD_arc'] as number) : undefined,
     };
 }
@@ -678,10 +689,11 @@ function saveAllPointsData() {
 // 仅从后端获取参数（xy_rotation、A_tangent 等），不覆盖已有的 positions/bezierPoints/scenes
 async function fetchAndUpdateParams() {
   try {
-    const response = await api.get('/api/next-three-image-and-data');
-    const apiData = response.data as ApiResponse;
-    if (apiData.outputData) {
-      const od = apiData.outputData as any;
+    // 使用不消耗数据组的专用接口，避免多用户并发时耗尽 currentGroupIndex
+    const response = await api.get('/api/current-params');
+    const data = response.data as any;
+    if (data.outputData) {
+      const od = data.outputData as any;
       if (typeof od['xy_rotation'] === 'number') {
         sharedPointsState.xyRotation = od['xy_rotation'];
         console.log('[App] fetchAndUpdateParams: xyRotation =', od['xy_rotation']);
@@ -808,6 +820,8 @@ async function fetchNextDataBatch(force = false) {
             positions: sharedPointsState.positions,
             bezierPoints: sharedPointsState.bezierPoints,
             scenes: newScenes,
+            xyRotation: sharedPointsState.xyRotation,
+            aTangent: sharedPointsState.aTangent,
             // 若已有保存的 dataCenter/camera/zoom 等字段，则合并保留
             dataCenter: existing.dataCenter ?? undefined,
             cameraPosition: existing.cameraPosition ?? undefined,
@@ -841,6 +855,13 @@ async function fetchNextDataBatch(force = false) {
               sharedPointsState.positions = persisted.positions.map((p: any) => ({ name: p.name, x: Number(p.x), y: Number(p.y), z: Number(p.z) }));
               sharedPointsState.bezierPoints = Array.isArray(persisted.bezierPoints) ? persisted.bezierPoints.map((p: any) => ({ name: p.name, x: Number(p.x), y: Number(p.y), z: Number(p.z) })) : [];
             }
+            // 恢复 xyRotation 和 aTangent
+            if (typeof persisted.xyRotation === 'number') {
+              sharedPointsState.xyRotation = persisted.xyRotation;
+            }
+            if (typeof persisted.aTangent === 'number') {
+              sharedPointsState.aTangent = persisted.aTangent;
+            }
             console.warn('后端拉取失败，已从 localStorage 回退并展示本地保存的 scenes 数据。');
             if (!haveLocalRestore) {
               errorMessage.value = '后端加载失败；已使用本地保存的数据作为回退。';
@@ -851,6 +872,13 @@ async function fetchNextDataBatch(force = false) {
           if (Array.isArray(persisted.positions) && persisted.positions.length > 0) {
             sharedPointsState.positions = persisted.positions.map((p: any) => ({ name: p.name, x: Number(p.x), y: Number(p.y), z: Number(p.z) }));
             sharedPointsState.bezierPoints = Array.isArray(persisted.bezierPoints) ? persisted.bezierPoints.map((p: any) => ({ name: p.name, x: Number(p.x), y: Number(p.y), z: Number(p.z) })) : [];
+            // 恢复 xyRotation 和 aTangent
+            if (typeof persisted.xyRotation === 'number') {
+              sharedPointsState.xyRotation = persisted.xyRotation;
+            }
+            if (typeof persisted.aTangent === 'number') {
+              sharedPointsState.aTangent = persisted.aTangent;
+            }
             const sceneObj: any = {
               backgroundImage: persisted.backgroundImage || '',
               cameraRotation: persisted.cameraRotation || [0,0,0],
@@ -997,6 +1025,13 @@ onMounted(() => {
             sharedPointsState.positions = persisted.positions.map((p: any) => ({ name: p.name, x: Number(p.x), y: Number(p.y), z: Number(p.z) }));
             sharedPointsState.bezierPoints = Array.isArray(persisted.bezierPoints) ? persisted.bezierPoints.map((p: any) => ({ name: p.name, x: Number(p.x), y: Number(p.y), z: Number(p.z) })) : [];
           }
+          // 恢复 xyRotation 和 aTangent 参数（避免刷新后重置为默认值）
+          if (typeof persisted.xyRotation === 'number') {
+            sharedPointsState.xyRotation = persisted.xyRotation;
+          }
+          if (typeof persisted.aTangent === 'number') {
+            sharedPointsState.aTangent = persisted.aTangent;
+          }
           if (hasScenes) {
             scenesData.value = persisted.scenes;
           } else {
@@ -1009,8 +1044,7 @@ onMounted(() => {
             scenesData.value = [sceneObj];
           }
           haveLocalRestore = true;
-          console.log('已从 localStorage 恢复场景与共享点；稍后仍会尝试从后端拉取以获取完整 scenes（如果可用）。');
-          // 不再 return，继续调用 fetchNextDataBatch() 以尝试获取后端的完整 scenes
+          console.log('已从 localStorage 恢复场景与共享点（含 xyRotation/aTangent）；不再调用后端获取参数。');
         }
       }
     }
@@ -1024,8 +1058,8 @@ onMounted(() => {
   if (!haveLocalRestore) {
     fetchNextDataBatch();
   } else {
-    console.log('检测到本地恢复，跳过页面挂载时的自动后端拉取，仅更新参数。');
-    // 即使有本地缓存，也从后端获取 xy_rotation 和 A_tangent 等参数
+    // 已从 localStorage 恢复完整数据，用不消耗数据组的接口同步最新参数
+    console.log('检测到本地恢复，跳过页面挂载时的自动后端拉取，仅同步参数。');
     fetchAndUpdateParams();
   }
 

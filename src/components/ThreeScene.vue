@@ -104,50 +104,17 @@ function regenerateNailModel() {
 }
 
 function resetCameraToProps() {
-  // 优先使用在 localStorage 中保存的后端原始视角（如果存在）
-  try {
-    const raw = localStorage.getItem(ORIGINAL_ROTATION_KEY);
-    if (raw) {
-      try {
-        const map = JSON.parse(raw) || {};
-        const key = getSceneKey();
-        const arr = map[key];
-        if (Array.isArray(arr) && arr.length === 3) {
-          applyCameraRotationFromArray(arr);
-          // 同步到 props 与本地存储中的 cameraRotation，以使回退与保存一致（仅针对当前场景）
-          try {
-            if (props.sceneData) {
-              props.sceneData.cameraRotation = arr;
-            }
-            saveStateToLocalStorage();
-            console.log('已将本地存储的 cameraRotation 更新为原始预设 (场景):', key, arr);
-            // 将手动调整滑条归零（不触发相机变动），并写回场景的 cameraDelta
-              try { pitchValue.value = 0; rollValue.value = 0; yawValue.value = 0; if (props.sceneData) (props.sceneData as any).cameraDelta = { pitchDelta:0, rollDelta:0, yawDelta:0 }; try { saveCameraDeltaForScene(currentSceneKey.value); } catch(e) {} } catch (e) {}
-          } catch (e) {
-            console.warn('更新本地存储 cameraRotation 失败', e);
-          }
-          return;
-        }
-      } catch (e) {
-        // ignore parse error
-      }
-    }
-  } catch (e) {
-    // 忽略解析错误
-  }
-  // 否则使用当前 props 中的视角（回退）
-  if (props.sceneData && Array.isArray(props.sceneData.cameraRotation) && props.sceneData.cameraRotation.length === 3) {
-    applyCameraRotationFromArray(props.sceneData.cameraRotation);
-    // 确保 localStorage 中的 state.cameraRotation 同步为当前 props 的值
+  // 直接使用 props 中的原始 cameraRotation（可能是 3 元素 euler 或 4 元素 quaternion）
+  const rotation = props.sceneData?.cameraRotation;
+  if (rotation && (rotation.length === 3 || rotation.length === 4)) {
+    applyCameraRotationFromArray(rotation);
     try {
       saveStateToLocalStorage();
-      console.log('已将本地存储的 cameraRotation 同步为 props.sceneData.cameraRotation');
-      // 将手动调整滑条归零（不触发相机变动），并写回场景的 cameraDelta
-      try { pitchValue.value = 0; rollValue.value = 0; yawValue.value = 0; if (props.sceneData) (props.sceneData as any).cameraDelta = { pitchDelta:0, rollDelta:0, yawDelta:0 }; try { saveCameraDeltaForScene(currentSceneKey.value); } catch(e) {} } catch (e) {}
-    } catch (e) {
-      console.warn('保存 cameraRotation 到 localStorage 失败', e);
-    }
+      console.log('已重置到预设视角:', rotation);
+    } catch (e) {}
   }
+  // 将滑条归零
+  try { pitchValue.value = 0; rollValue.value = 0; yawValue.value = 0; if (props.sceneData) (props.sceneData as any).cameraDelta = { pitchDelta:0, rollDelta:0, yawDelta:0 }; try { saveCameraDeltaForScene(currentSceneKey.value); } catch(e) {} } catch (e) {}
 }
 
 // 重置图片位置
@@ -268,11 +235,20 @@ watch(() => sharedPointsState.bezierPoints, () => {
 const xyRotationValue = vueRef(sharedPointsState.xyRotation || 0.0)
 const aTangentValue = vueRef(sharedPointsState.aTangent || Math.PI / 10)
 
+// 记录后端传来的原始参数值，用于重置按钮
+let originalXyRotation: number = sharedPointsState.xyRotation || 0.0;
+let originalATangent: number = sharedPointsState.aTangent || Math.PI / 10;
+let isLocalParamChange = false; // 防止本地修改覆盖原始值
+
 // 监听 sharedPointsState 中的 xyRotation 和 aTangent 变化
 watch(() => sharedPointsState.xyRotation, (val) => {
   if (typeof val === 'number') {
     console.log('[ThreeScene] xyRotation updated from store:', val, '-> degrees:', val * 180 / Math.PI);
     xyRotationValue.value = val;
+    if (!isLocalParamChange) {
+      originalXyRotation = val; // 仅后端更新时记录原始值
+    }
+    isLocalParamChange = false;
     try { regenerateNailModel(); } catch(e) {}
   }
 });
@@ -280,6 +256,10 @@ watch(() => sharedPointsState.aTangent, (val) => {
   if (typeof val === 'number') {
     console.log('[ThreeScene] aTangent updated from store:', val, '-> degrees:', val * 180 / Math.PI);
     aTangentValue.value = val;
+    if (!isLocalParamChange) {
+      originalATangent = val; // 仅后端更新时记录原始值
+    }
+    isLocalParamChange = false;
     try { regenerateNailModel(); } catch(e) {}
   }
 });
@@ -324,14 +304,22 @@ const adArcStep = computed(() => Math.pow(10, -Math.max(0, adArcPrecision.value)
 
 function updateCameraPrecisionFromProps() {
   try {
-    if (props.sceneData && Array.isArray(props.sceneData.cameraRotation) && props.sceneData.cameraRotation.length === 3) {
-      const nr = props.sceneData.cameraRotation;
-      // const x = -nr[0];
-      // const y = -nr[1];
-      // const z = 90 - nr[2];
-      const x = nr[0];
-      const y = nr[1];
-      const z = nr[2];
+    const cr = props.sceneData?.cameraRotation;
+    if (cr && Array.isArray(cr) && (cr.length === 3 || cr.length === 4)) {
+      let x: number, y: number, z: number;
+      if (cr.length === 4) {
+        // Quaternion → euler for precision calc
+        const q = new THREE.Quaternion(cr[0], cr[1], cr[2], cr[3]);
+        const euler = new THREE.Euler().setFromQuaternion(q, 'XYZ');
+        const toDeg = 180 / Math.PI;
+        x = euler.x * toDeg;
+        y = euler.y * toDeg;
+        z = euler.z * toDeg;
+      } else {
+        x = cr[0];
+        y = cr[1];
+        z = cr[2];
+      }
       const p = Math.max(getDecimalPlaces(x), getDecimalPlaces(y), getDecimalPlaces(z));
       cameraPrecision.value = p;
       return;
@@ -446,11 +434,29 @@ function applySlidersToCamera() {
   } catch (e) {}
 }
 
-// 将后端/props 中的欧拉角数组应用到相机并初始化 baseSpherical
+// 将后端/props 中的旋转数据应用到相机并初始化 baseSpherical
+// 支持 3 元素欧拉角 [x,y,z]（度）和 4 元素四元数 [x,y,z,w]
 function applyCameraRotationFromArray(newRotation: number[]) {
   if (!camera || !controls) return;
   try {
-    // 保存后端提供的原始视角到 localStorage（按场景映射，且仅在当前场景键不存在时写入）
+    let x_from_backend: number, y_from_backend: number, z_from_backend: number;
+
+    if (newRotation.length === 4) {
+      // 四元数模式：先转为欧拉角（度），再应用与欧拉角相同的变换
+      const q = new THREE.Quaternion(newRotation[0], newRotation[1], newRotation[2], newRotation[3]);
+      const eulerRad = new THREE.Euler().setFromQuaternion(q, 'XYZ');
+      const toDeg = 180 / Math.PI;
+      x_from_backend = eulerRad.x * toDeg;
+      y_from_backend = eulerRad.y * toDeg;
+      z_from_backend = eulerRad.z * toDeg;
+    } else {
+      // 欧拉角模式（原有逻辑）
+      x_from_backend = newRotation[0];
+      y_from_backend = newRotation[1];
+      z_from_backend = newRotation[2];
+    }
+
+    // 保存转换后的欧拉角到 localStorage（按场景映射，始终更新以支持 quaternion 变化）
     try {
       const rawMap = localStorage.getItem(ORIGINAL_ROTATION_KEY);
       let map: Record<string, any> = {};
@@ -460,26 +466,21 @@ function applyCameraRotationFromArray(newRotation: number[]) {
         map = {};
       }
       const key = getSceneKey();
-      if ((!map || !map[key]) && Array.isArray(newRotation) && newRotation.length === 3) {
-        map[key] = newRotation;
-        try {
-          localStorage.setItem(ORIGINAL_ROTATION_KEY, JSON.stringify(map));
-          console.log('已保存后端原始视角到 localStorage (scene):', key, newRotation);
-        } catch (e) {
-          // ignore write errors
-        }
-      }
-    } catch (e) {
-      // ignore storage errors
-    }
-    // newRotation 来自 props (backend)，格式为 [x,y,z]
-    let x_from_backend = newRotation[0]; // X (Pitch)
-    let y_from_backend = newRotation[1]; // Y (Yaw)
-    let z_from_backend = newRotation[2]; // Z (Roll)
+      const eulerForCache = [x_from_backend, y_from_backend, z_from_backend];
+      // 始终更新缓存（支持 quaternion 数据刷新）
+      map[key] = eulerForCache;
+      try {
+        localStorage.setItem(ORIGINAL_ROTATION_KEY, JSON.stringify(map));
+      } catch (e) {}
+    } catch (e) {}
 
+    // 应用与之前相同的坐标变换
     x_from_backend = -x_from_backend; // 反转X轴 (与后端约定)
     y_from_backend = -y_from_backend; // 反转Y轴
     z_from_backend = 90 - z_from_backend;
+
+    // 同步 baseCameraEulerDeg（滑条基准）
+    baseCameraEulerDeg.value = [x_from_backend, y_from_backend, z_from_backend];
 
     const euler = new THREE.Euler(
       THREE.MathUtils.degToRad(x_from_backend),
@@ -510,7 +511,6 @@ function applyCameraRotationFromArray(newRotation: number[]) {
     const rel = camera.position.clone().sub(center);
     baseSpherical = new THREE.Spherical();
     baseSpherical.setFromVector3(rel);
-    // 注意：不要在此处覆盖 baseCameraEulerDeg，以便滑条始终相对于最初的后端原始角度
   } catch (e) {
     console.warn('applyCameraRotationFromArray failed', e);
   }
@@ -518,30 +518,12 @@ function applyCameraRotationFromArray(newRotation: number[]) {
   try { lastAppliedCameraRotation = newRotation.slice(); } catch (e) {}
 }
 
-// 保存当前相机朝向到 props.sceneData.cameraRotation（用于在 UI 操作后持久化）
+// 保存当前相机状态（不回写 cameraRotation，避免覆盖原始 quaternion 触发循环）
 function saveCurrentCameraRotationToProps() {
   if (camera && props.sceneData) {
     try {
-      const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'XYZ');
-      const ex = THREE.MathUtils.radToDeg(euler.x);
-      const ey = THREE.MathUtils.radToDeg(euler.y);
-      const ez = THREE.MathUtils.radToDeg(euler.z);
-      let backend_x = -ex;
-      let backend_y = -ey;
-      let backend_z = 90 - ez;
-      // let backend_x = ex;
-      // let backend_y = ey;
-      // let backend_z = ez;
-      // 按当前 cameraPrecision 舍入保存（度数位数）
-      try {
-        const p = Math.max(0, cameraPrecision.value);
-        backend_x = Number(backend_x.toFixed(p));
-        backend_y = Number(backend_y.toFixed(p));
-        backend_z = Number(backend_z.toFixed(p));
-      } catch (e) {}
-      props.sceneData.cameraRotation = [backend_x, backend_y, backend_z];
+      // 仅保存 cameraQuaternion 和 localStorage，不修改 props.sceneData.cameraRotation
       saveStateToLocalStorage();
-      console.log('已保存新视角到 props.sceneData.cameraRotation:', props.sceneData.cameraRotation);
     } catch (e) {
       console.warn('保存相机视角失败', e);
     }
@@ -753,19 +735,21 @@ function refreshSphereDisplayPositions() {
 }
 
 function onParameterChange() {
+  isLocalParamChange = true
   sharedPointsState.xyRotation = xyRotationValue.value
+  isLocalParamChange = true
   sharedPointsState.aTangent = aTangentValue.value
   refreshSphereDisplayPositions()
   regenerateNailModel()
 }
 
 function resetXyRotation() {
-  xyRotationValue.value = 0
+  xyRotationValue.value = originalXyRotation
   onParameterChange()
 }
 
 function resetATangent() {
-  aTangentValue.value = Math.PI / 10
+  aTangentValue.value = originalATangent
   onParameterChange()
 }
 
@@ -878,38 +862,44 @@ function getOriginalRotationForScene(key: string | null): number[] | null {
   }
 }
 
-// 将 ORIGINAL_ROTATION_KEY 中的原始后端角度加载为 baseCameraEulerDeg（度）
+// 将原始后端角度加载为 baseCameraEulerDeg（度）
+// 支持 3 元素欧拉角和 4 元素四元数（从 props.cameraRotation 或 ORIGINAL_ROTATION_KEY）
 function loadOriginalBaseForScene(key: string | null) {
   try {
-    const arr = getOriginalRotationForScene(key);
-    if (arr && Array.isArray(arr) && arr.length === 3) {
-      // 与 applyCameraRotationFromArray 使用相同的转换
-      const x_from_backend = -arr[0];
-      const y_from_backend = -arr[1];
-      const z_from_backend = 90 - arr[2];
-      // const x_from_backend = arr[0];
-      // const y_from_backend = arr[1];
-      // const z_from_backend = arr[2];
+    // 优先使用 props 中当前的 cameraRotation（可能是 quaternion）
+    const propsRotation = props.sceneData?.cameraRotation;
+    if (propsRotation && Array.isArray(propsRotation) && propsRotation.length >= 3) {
+      let x_raw: number, y_raw: number, z_raw: number;
+      if (propsRotation.length === 4) {
+        // Quaternion → euler degrees
+        const q = new THREE.Quaternion(propsRotation[0], propsRotation[1], propsRotation[2], propsRotation[3]);
+        const eulerRad = new THREE.Euler().setFromQuaternion(q, 'XYZ');
+        const toDeg = 180 / Math.PI;
+        x_raw = eulerRad.x * toDeg;
+        y_raw = eulerRad.y * toDeg;
+        z_raw = eulerRad.z * toDeg;
+      } else {
+        x_raw = propsRotation[0];
+        y_raw = propsRotation[1];
+        z_raw = propsRotation[2];
+      }
+      const x_from_backend = -x_raw;
+      const y_from_backend = -y_raw;
+      const z_from_backend = 90 - z_raw;
       baseCameraEulerDeg.value = [x_from_backend, y_from_backend, z_from_backend];
-      // update precision
       try { cameraPrecision.value = Math.max(getDecimalPlaces(x_from_backend), getDecimalPlaces(y_from_backend), getDecimalPlaces(z_from_backend)); } catch (e) {}
     } else {
-        // fallback: if props has cameraRotation, use it to set baseCameraEulerDeg
-        try {
-          if (props.sceneData && Array.isArray(props.sceneData.cameraRotation) && props.sceneData.cameraRotation.length === 3) {
-            const arr = props.sceneData.cameraRotation;
-            const x_from_backend = -arr[0];
-            const y_from_backend = -arr[1];
-            const z_from_backend = 90 - arr[2];
-            // const x_from_backend = arr[0];
-            // const y_from_backend = arr[1];
-            // const z_from_backend = arr[2];
-            baseCameraEulerDeg.value = [x_from_backend, y_from_backend, z_from_backend];
-            try { cameraPrecision.value = Math.max(getDecimalPlaces(x_from_backend), getDecimalPlaces(y_from_backend), getDecimalPlaces(z_from_backend)); } catch (e) {}
-          } else {
-            try { updateCameraPrecisionFromProps(); } catch (e) {}
-          }
-        } catch (e) {}
+      // Fallback: try ORIGINAL_ROTATION_KEY
+      const arr = getOriginalRotationForScene(key);
+      if (arr && Array.isArray(arr) && arr.length === 3) {
+        const x_from_backend = -arr[0];
+        const y_from_backend = -arr[1];
+        const z_from_backend = 90 - arr[2];
+        baseCameraEulerDeg.value = [x_from_backend, y_from_backend, z_from_backend];
+        try { cameraPrecision.value = Math.max(getDecimalPlaces(x_from_backend), getDecimalPlaces(y_from_backend), getDecimalPlaces(z_from_backend)); } catch (e) {}
+      } else {
+        try { updateCameraPrecisionFromProps(); } catch (e) {}
+      }
     }
   } catch (e) {}
 }
@@ -2738,17 +2728,21 @@ watch(
   }
     // --- 更新相机视角 (cameraRotation) ---
     const newRotation = newData.cameraRotation;
-    if (camera && controls && newRotation && newRotation.length === 3) {
-      // 仅当后端的 cameraRotation 与上次应用的不同（即非仅 cameraDelta 导致的 props 变更）时才应用
+    if (camera && controls && newRotation && (newRotation.length === 3 || newRotation.length === 4)) {
+      // 仅当后端的 cameraRotation 与上次应用的不同时才应用
       const needApply = !lastAppliedCameraRotation || !(
         lastAppliedCameraRotation.length === newRotation.length &&
         lastAppliedCameraRotation[0] === newRotation[0] &&
         lastAppliedCameraRotation[1] === newRotation[1] &&
-        lastAppliedCameraRotation[2] === newRotation[2]
+        lastAppliedCameraRotation[2] === newRotation[2] &&
+        (newRotation.length < 4 || lastAppliedCameraRotation[3] === newRotation[3])
       );
       if (needApply) {
-        //console.log(`正在更新相机视角至: [${newRotation.join(', ')}]`);
         applyCameraRotationFromArray(newRotation);
+        // 应用后恢复该场景保存的滑条偏移（如果有）
+        if (pitchValue.value !== 0 || rollValue.value !== 0 || yawValue.value !== 0) {
+          applySlidersToCamera();
+        }
       }
     }
 
