@@ -340,7 +340,8 @@ watch(() => props.sceneData && props.sceneData.cameraRotation, () => {
 // 新增：独立的背景同步函数
 function syncBackgroundToCamera() {
   // 关键：如果正在拖拽背景，不要执行同步覆盖，否则拖不动
-  if (!backgroundPlane || !camera || currentDragged === backgroundPlane) return;
+  // 同时检查 backgroundPlane 是否仍在 scene 中（parent !== null）
+  if (!backgroundPlane || !camera || !backgroundPlane.parent || currentDragged === backgroundPlane) return;
 
   const { r, u, f } = currentOffsets.value;
 
@@ -948,15 +949,14 @@ watch(() => (sharedPointsState as any).globalAdArc, () => {
 const allowBackgroundDrag = vueRef(false);
 
 function setBackgroundDraggable(enabled: boolean) {
-  if (!backgroundPlane) return;
+  if (!backgroundPlane || !backgroundPlane.parent) return;
   const hasInList = draggableObjects.includes(backgroundPlane);
   if (enabled && !hasInList) {
     draggableObjects.push(backgroundPlane);
-    if (dragControls) dragControls.objects = draggableObjects;
   } else if (!enabled && hasInList) {
     draggableObjects = draggableObjects.filter(obj => obj !== backgroundPlane);
-    if (dragControls) dragControls.objects = draggableObjects;
   }
+  if (dragControls) dragControls.objects = draggableObjects;
 }
 
 // 当用户切换 allowBackgroundDrag 时，更新 draggableObjects
@@ -2285,9 +2285,11 @@ onMounted(() => {
       // 对于图片拖拽（如果允许），也可以记录快照但当前只针对球体
     });
      dragControls.addEventListener('drag', function (event) {
+      // 跳过已从 scene 移除的对象
+      if (!event.object.parent) return;
       // 在拖动过程中的每一帧，都调用 addBezier 函数重绘曲线（不隐藏标签）
       generateCustomBezierCurves(false);
-      if (event.object === backgroundPlane) {
+      if (event.object === backgroundPlane && backgroundPlane.parent) {
         // 拖拽时实时更新相对于中心的偏移
         recordCurrentOffsets(); // 核心：拖动时同步计算新的相对位置关系
       }
@@ -2764,6 +2766,9 @@ watch(
         texture.colorSpace = THREE.SRGBColorSpace;
         // 再次清理，确保没有残留的plane
         if (backgroundPlane) {
+          // 从可拖拽列表中移除旧 plane
+          draggableObjects = draggableObjects.filter(obj => obj !== backgroundPlane);
+          if (dragControls) dragControls.objects = draggableObjects;
           scene.remove(backgroundPlane);
           backgroundPlane.geometry.dispose();
           if (Array.isArray(backgroundPlane.material)) {
