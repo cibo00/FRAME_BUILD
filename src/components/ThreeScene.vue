@@ -9,6 +9,7 @@ import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry.js'
 import { BezierCurve } from '../utils/BezierUtils'
 import { Const } from 'three/tsl'
 import { sharedPointsState, type ScenePoint } from '../stores/sharedStore.ts';
+import { getTabScopedId } from '../utils/clientId';
 import RootSideProfile from './RootSideProfile.vue'
 import TipSideProfile from './TipSideProfile.vue'
 
@@ -1062,8 +1063,9 @@ function redo() {
 const firstCentered = vueRef(false); // 用于确保只居中一次
 const dataCenter = vueRef<THREE.Vector3>(new THREE.Vector3()); // 每个组件实例独立的 dataCenter
 
-// Local storage key
-const STORAGE_KEY = 'frame_build_three_scene_state_v1';
+// Local storage key（加 tabScope 后缀实现标签页隔离）
+const tabScope = getTabScopedId();
+const STORAGE_KEY = `frame_build_three_scene_state_v1_${tabScope}`;
 // 存储后端原始视角的独立键（按场景存储为映射）
 const ORIGINAL_ROTATION_KEY = STORAGE_KEY + '_original_camera_rotation_map';
 // 全局存储 AD_arc 的键（统一在所有场景中同步）

@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue'
 import ThreeScene from './ThreeScene.vue'
 import { sharedPointsState } from '@/stores/sharedStore.ts'
+import { getTabScopedId } from '@/utils/clientId'
 import { onMounted, watch } from 'vue'
 
 // 接收父组件传递过来的多个场景的数据
@@ -13,7 +14,7 @@ const props = defineProps<{
   onUploadResult?: () => void,  // 上传结果
 }>()
 
-const ACTIVE_INDEX_KEY = 'frame_build_active_scene_index_v1'
+const ACTIVE_INDEX_KEY = `frame_build_active_scene_index_v1_${getTabScopedId()}`
 
 // 在 setup 同步初始化 activeSceneIndex，确保子组件在第一次渲染时得到正确索引（避免竞态）
 let initialIdx = 0;

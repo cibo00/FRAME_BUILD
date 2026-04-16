@@ -12,6 +12,7 @@ import SidePanel from './components/SidePanel.vue'
 import ThreeScene from './components/ThreeScene.vue'
 import { sharedPointsState, type ScenePoint } from './stores/sharedStore.ts';
 import { OperationManager } from '@/utils/OperationManager';
+import { getTabScopedId } from '@/utils/clientId';
 const str_point = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
 // 操作管理器实例
@@ -19,8 +20,9 @@ let operationManager: OperationManager | null = null;
 
 // 用于存放从后端获取并转换后的场景数据，将传递给SidePanel
 const scenesData = ref<any[]>([]);
-// 本地持久化的 storage key，模块级可在本文件任意位置引用
-const STORAGE_KEY = 'frame_build_three_scene_state_v1';
+// 本地持久化的 storage key，模块级可在本文件任意位置引用（加 tabScope 后缀实现标签页隔离）
+const tabScope = getTabScopedId();
+const STORAGE_KEY = `frame_build_three_scene_state_v1_${tabScope}`;
 //const isLoading = ref(false);
 const errorMessage = ref('');
 
@@ -245,11 +247,11 @@ async function initOperationManager(token: string) {
 function clearAllLocalStorageData() {
   try {
     const keysToRemove = [
-      'frame_build_three_scene_state_v1',
-      'frame_build_three_scene_state_v1_original_camera_rotation_map',
-      'frame_build_three_scene_state_v1_global_adarc',
-      'frame_build_three_scene_state_v1_original_adarc_map',
-      'frame_build_three_scene_state_v1_camera_delta_map'
+      STORAGE_KEY,
+      STORAGE_KEY + '_original_camera_rotation_map',
+      STORAGE_KEY + '_global_adarc',
+      STORAGE_KEY + '_original_adarc_map',
+      STORAGE_KEY + '_camera_delta_map'
     ];
 
     keysToRemove.forEach(key => {

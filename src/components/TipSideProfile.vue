@@ -119,7 +119,11 @@ function updateTipProfile() {
     sphere.userData.labelOffsetY = off.dy
 
     sceneRef.add(sphere)
-    draggableObjects.push(sphere)
+    
+    if (pointName !== 'A' && pointName !== 'D') {
+      // A 点和 D 点不参与拖拽，保持固定
+       draggableObjects.push(sphere)
+    }
 
     const label = createTextLabel(pointName)
     label.position.set(pointData.x + off.dx, pointData.y + off.dy, pointData.z)
