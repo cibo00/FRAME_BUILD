@@ -441,24 +441,48 @@ function applySlidersToCamera() {
 function applyCameraRotationFromArray(newRotation: number[]) {
   if (!camera || !controls) return;
   try {
-    let x_from_backend: number, y_from_backend: number, z_from_backend: number;
+    let targetQuaternion: THREE.Quaternion;
 
     if (newRotation.length === 4) {
-      // 四元数模式：先转为欧拉角（度），再应用与欧拉角相同的变换
-      const q = new THREE.Quaternion(newRotation[0], newRotation[1], newRotation[2], newRotation[3]);
-      const eulerRad = new THREE.Euler().setFromQuaternion(q, 'XYZ');
-      const toDeg = 180 / Math.PI;
-      x_from_backend = eulerRad.x * toDeg;
-      y_from_backend = eulerRad.y * toDeg;
-      z_from_backend = eulerRad.z * toDeg;
+      // ====== 四元数模式 — 直接使用后端原始四元数 ======
+      const qBackend = new THREE.Quaternion(
+        newRotation[0], newRotation[1], newRotation[2], newRotation[3]
+      );
+      targetQuaternion = qBackend;
     } else {
-      // 欧拉角模式（原有逻辑）
-      x_from_backend = newRotation[0];
-      y_from_backend = newRotation[1];
-      z_from_backend = newRotation[2];
+      // ====== 欧拉角模式（保持原有逻辑兼容）======
+      let x_from_backend = newRotation[0];
+      let y_from_backend = newRotation[1];
+      let z_from_backend = newRotation[2];
+
+      x_from_backend = -x_from_backend;
+      y_from_backend = -y_from_backend;
+      z_from_backend = 90 - z_from_backend;
+
+      const euler = new THREE.Euler(
+        THREE.MathUtils.degToRad(x_from_backend),
+        THREE.MathUtils.degToRad(y_from_backend),
+        THREE.MathUtils.degToRad(z_from_backend),
+        'XYZ'
+      );
+      targetQuaternion = new THREE.Quaternion().setFromEuler(euler);
+
+      // 同步 baseCameraEulerDeg（滑条基准）— 仅欧拉角模式使用
+      baseCameraEulerDeg.value = [x_from_backend, y_from_backend, z_from_backend];
     }
 
-    // 保存转换后的欧拉角到 localStorage（按场景映射，始终更新以支持 quaternion 变化）
+    // 四元数模式下也同步 baseCameraEulerDeg（供滑条使用）
+    if (newRotation.length === 4) {
+      const eulerDeg = new THREE.Euler().setFromQuaternion(targetQuaternion, 'XYZ');
+      const toDeg = 180 / Math.PI;
+      baseCameraEulerDeg.value = [
+        eulerDeg.x * toDeg,
+        eulerDeg.y * toDeg,
+        eulerDeg.z * toDeg
+      ];
+    }
+
+    // 保存到 localStorage（按场景映射）
     try {
       const rawMap = localStorage.getItem(ORIGINAL_ROTATION_KEY);
       let map: Record<string, any> = {};
@@ -468,29 +492,11 @@ function applyCameraRotationFromArray(newRotation: number[]) {
         map = {};
       }
       const key = getSceneKey();
-      const eulerForCache = [x_from_backend, y_from_backend, z_from_backend];
-      // 始终更新缓存（支持 quaternion 数据刷新）
-      map[key] = eulerForCache;
+      map[key] = baseCameraEulerDeg.value.slice();
       try {
         localStorage.setItem(ORIGINAL_ROTATION_KEY, JSON.stringify(map));
       } catch (e) {}
     } catch (e) {}
-
-    // 应用与之前相同的坐标变换
-    x_from_backend = -x_from_backend; // 反转X轴 (与后端约定)
-    y_from_backend = -y_from_backend; // 反转Y轴
-    z_from_backend = 90 - z_from_backend;
-
-    // 同步 baseCameraEulerDeg（滑条基准）
-    baseCameraEulerDeg.value = [x_from_backend, y_from_backend, z_from_backend];
-
-    const euler = new THREE.Euler(
-      THREE.MathUtils.degToRad(x_from_backend),
-      THREE.MathUtils.degToRad(y_from_backend),
-      THREE.MathUtils.degToRad(z_from_backend),
-      'XYZ'
-    );
-    const targetQuaternion = new THREE.Quaternion().setFromEuler(euler);
 
     // 重新设定 controls 的 target 为 dataCenter
     const center = dataCenter.value;

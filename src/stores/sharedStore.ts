@@ -27,7 +27,11 @@ export const sharedPointsState = reactive<{
     // xy_rotation 参数（弧度）
     xyRotation?: number | null,
     // A_tangent 参数（弧度）
-    aTangent?: number | null
+    aTangent?: number | null,
+    // 全局设置（来自后端或用户输入）
+    fingerType?: string | null,
+    focalLengthMm?: number | null,
+    sensorWidthMm?: number | null,
 }>( {
     // 初始化数据（您可以从外部加载默认值）
     positions: [

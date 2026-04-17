@@ -425,18 +425,24 @@ function setupLocalStorageListener() {
   }, 2000); // 每2秒检查一次
 }
 
-// 保存所有数据到后端
+// 保存所有数据到后端（临时操作，含修正四元数）
 function saveAllDataToBackend() {
   if (!operationManager) return;
 
   const operationData = {
-    // 共享点数据
     positions: sharedPointsState.positions,
     bezierPoints: sharedPointsState.bezierPoints,
-    scenes: scenesData.value,
+    scenes: scenesData.value.map(scene => ({
+      ...scene,
+      correctedQuaternion: getCorrectedQuaternion(scene),
+    })),
     globalADArc: (sharedPointsState as any).globalAdArc,
+    globalSettings: {
+      finger_type: sharedPointsState.fingerType,
+      focal_length_mm: sharedPointsState.focalLengthMm,
+      sensor_width_mm: sharedPointsState.sensorWidthMm,
+    },
 
-    // 从 localStorage 读取额外的数据
     mainState: getLocalStorageItem('frame_build_three_scene_state_v1'),
     originalRotationMap: getLocalStorageItem('frame_build_three_scene_state_v1_original_camera_rotation_map'),
     globalAdArcValue: getLocalStorageItem('frame_build_three_scene_state_v1_global_adarc'),
@@ -452,35 +458,15 @@ function saveAllDataToBackend() {
 // 保存结果至服务器
 async function Save_Building_Result() {
   try {
-    // 定义点名称替换映射（与保存点数据一致）
-    const nameReplaceMap: { [key: string]: string } = {
-      'AB_P4': 'B_P_AB',
-      'CD_P2': 'D_P_CD',
-      'AF_P1': 'A_P_AF',
-      'AF_P4': 'F_P_AF'
-    };
-
-    const replacePointNames = (points: any[]) => {
-      return points.map(point => {
-        const newName = nameReplaceMap[point.name] || point.name;
-        return { ...point, name: newName };
-      });
-    };
-
-    // 组装与"保存点数据"相同的 payload
-    const payload: LocalSavePayload = {
-      positions: replacePointNames(sharedPointsState.positions),
-      bezierPoints: replacePointNames(sharedPointsState.bezierPoints),
-      scenes: scenesData.value.map(scene => ({
-        backgroundImage: scene.backgroundImage,
-        cameraRotation: scene.cameraRotation,
-        backgroundPlanePosition: scene.backgroundPlanePosition,
-        imageScale: scene.imageScale ?? 1,
-      })),
-      globalADArc: (sharedPointsState as any).globalAdArc ?? undefined,
-      sideProfilePoints: sharedPointsState.sideProfilePoints,
-      xyRotation: sharedPointsState.xyRotation ?? undefined,
-      aTangent: sharedPointsState.aTangent ?? undefined,
+    // 使用与本地保存相同的后端格式
+    const payload = {
+      global_settings: {
+        finger_type: sharedPointsState.fingerType || '',
+        focal_length_mm: sharedPointsState.focalLengthMm || 0,
+        sensor_width_mm: sharedPointsState.sensorWidthMm || 0,
+      },
+      output_data: buildOutputData(),
+      image_metadata_list: buildImageMetadataList(),
     };
 
     const sendPayload = {
@@ -616,69 +602,138 @@ function transformOutputData(outputData: OutputData, imageWithMeta: ImageWithMet
     };
 }
 
-// 下载 JSON 文件
+// 计算每个场景的修正四元数（原始四元数 + 滑条增量）
+function getCorrectedQuaternion(scene: any): number[] {
+  const tabScope = getTabScopedId();
+  const deltaMapKey = `frame_build_three_scene_state_v1_${tabScope}_camera_delta_map`;
+  const rot = scene.cameraRotation;
+
+  // 非4元素时直接返回原始值
+  if (!rot || rot.length !== 4) return rot;
+
+  const qBase = new THREE.Quaternion(rot[0], rot[1], rot[2], rot[3]);
+
+  // 读取该场景的滑条增量
+  const sceneKey = scene.backgroundImage || 'default_scene';
+  let pitchDelta = 0, yawDelta = 0, rollDelta = 0;
+  try {
+    const raw = localStorage.getItem(deltaMapKey);
+    if (raw) {
+      const map = JSON.parse(raw);
+      const entry = map[sceneKey];
+      if (entry) {
+        pitchDelta = entry.pitchDelta || 0;
+        yawDelta = entry.yawDelta || 0;
+        rollDelta = entry.rollDelta || 0;
+      }
+    }
+  } catch (e) {}
+
+  // 无增量时直接返回原始四元数
+  if (pitchDelta === 0 && yawDelta === 0 && rollDelta === 0) return rot;
+
+  // 与 ThreeScene 中 applySlidersToCamera 一致：先转欧拉角作为 base，再用增量叠加
+  const baseEulerDeg = [0, 0, 0];
+  const eulerRad = new THREE.Euler().setFromQuaternion(qBase, 'XYZ');
+  const toDeg = 180 / Math.PI;
+  baseEulerDeg[0] = eulerRad.x * toDeg;
+  baseEulerDeg[1] = eulerRad.y * toDeg;
+  baseEulerDeg[2] = eulerRad.z * toDeg;
+
+  const baseQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+    THREE.MathUtils.degToRad(baseEulerDeg[0]),
+    THREE.MathUtils.degToRad(baseEulerDeg[1]),
+    THREE.MathUtils.degToRad(baseEulerDeg[2]),
+    'XYZ'
+  ));
+  const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+    THREE.MathUtils.degToRad(pitchDelta),
+    THREE.MathUtils.degToRad(yawDelta),
+    THREE.MathUtils.degToRad(rollDelta),
+    'YXZ'
+  ));
+  const corrected = baseQ.clone().multiply(deltaQ);
+  return [corrected.x, corrected.y, corrected.z, corrected.w];
+}
+
+// 从 scenesData 构建 output_data（后端格式，点名为 key，坐标为 [x, y]）
+function buildOutputData(): Record<string, any> {
+  const nameReplaceMap: { [key: string]: string } = {
+    'AB_P4': 'B_P_AB', 'CD_P2': 'D_P_CD', 'AF_P1': 'A_P_AF', 'AF_P4': 'F_P_AF'
+  };
+
+  const output: Record<string, any> = {};
+
+  // 合并 positions 和 bezierPoints（仅取 x, y）
+  const allPoints = [...sharedPointsState.positions, ...sharedPointsState.bezierPoints];
+  for (const p of allPoints) {
+    const name = nameReplaceMap[p.name] || p.name;
+    output[name] = [p.x, p.y];
+  }
+
+  // 侧轮廓控制点
+  if (sharedPointsState.sideProfilePoints) {
+    for (const p of sharedPointsState.sideProfilePoints) {
+      output[p.name] = [p.x, p.y];
+    }
+  }
+
+  // 标量参数
+  if (typeof sharedPointsState.globalAdArc === 'number') {
+    output['AD_arc'] = sharedPointsState.globalAdArc;
+  }
+  if (typeof sharedPointsState.xyRotation === 'number') {
+    output['xy_rotation'] = sharedPointsState.xyRotation;
+  }
+  if (typeof sharedPointsState.aTangent === 'number') {
+    output['A_tangent'] = sharedPointsState.aTangent;
+  }
+
+  return output;
+}
+
+// 构建 image_metadata_list（每个场景一个条目，包含修正后的四元数）
+function buildImageMetadataList(): { image_filename: string; quaternion: number[] }[] {
+  return scenesData.value.map(scene => {
+    const corrected = getCorrectedQuaternion(scene);
+    const filename = scene.backgroundImage ? scene.backgroundImage.split('/').pop() : '';
+    return {
+      image_filename: filename,
+      quaternion: corrected,
+    };
+  });
+}
+
+// 下载 JSON 文件（后端 testdata.json 格式）
 function saveAllPointsData() {
     isSaving.value = true;
 
     try {
-        // 定义点名称替换映射
-        const nameReplaceMap: { [key: string]: string } = {
-            'AB_P4': 'B_P_AB',
-            'CD_P2': 'D_P_CD',
-            'AF_P1': 'A_P_AF',
-            'AF_P4': 'F_P_AF'
+        const payload = {
+          global_settings: {
+            finger_type: sharedPointsState.fingerType || '',
+            focal_length_mm: sharedPointsState.focalLengthMm || 0,
+            sensor_width_mm: sharedPointsState.sensorWidthMm || 0,
+          },
+          output_data: buildOutputData(),
+          image_metadata_list: buildImageMetadataList(),
         };
 
-        // 辅助函数：替换点名称
-        const replacePointNames = (points: any[]) => {
-            return points.map(point => {
-                const newName = nameReplaceMap[point.name] || point.name;
-                return { ...point, name: newName };
-            });
-        };
-
-        // 1. 组装请求体 (Payload)，并替换点名称
-        const payload: LocalSavePayload = {
-            // 获取最新的共享点数据并替换名称
-            positions: replacePointNames(sharedPointsState.positions),
-            bezierPoints: replacePointNames(sharedPointsState.bezierPoints),
-            // 携带每个场景的非共享数据
-          scenes: scenesData.value.map(scene => ({
-            backgroundImage: scene.backgroundImage,
-            cameraRotation: scene.cameraRotation,
-            backgroundPlanePosition: scene.backgroundPlanePosition,
-            imageScale: scene.imageScale ?? 1,
-            //AD_arc: typeof scene.AD_arc === 'number' ? scene.AD_arc : undefined,
-          })),
-          // 全局 AD_arc（以弧度存储），如果存在则导出
-          globalADArc: (sharedPointsState as any).globalAdArc ?? undefined,
-          // 侧轮廓控制点
-          sideProfilePoints: sharedPointsState.sideProfilePoints,
-          // 旋转和切线参数
-          xyRotation: sharedPointsState.xyRotation ?? undefined,
-          aTangent: sharedPointsState.aTangent ?? undefined,
-        };
-
-        // 2. 将对象转换为 JSON 字符串
-        const dataStr = JSON.stringify(payload, null, 2); // null, 2 用于美化输出格式
-
-        // 3. 创建 Blob 对象和下载链接
+        const dataStr = JSON.stringify(payload, null, 2);
         const blob = new Blob([dataStr], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
-        
-        // 4. 触发下载
+
         const a = document.createElement('a');
         a.href = url;
-        a.download = `scene_data_${new Date().toISOString().slice(0, 10)}.json`; // 自动生成文件名
-        document.body.appendChild(a); 
-        a.click(); 
-        document.body.removeChild(a); 
+        a.download = `testdata_${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
 
-        // 5. 释放 URL 对象
         URL.revokeObjectURL(url);
-        
+
         alert('数据已成功保存为 JSON 文件！');
-        
+
     } catch (error) {
         console.error('生成或下载 JSON 文件失败:', error);
         alert('文件下载失败，请检查浏览器设置或联系管理员。');
@@ -778,6 +833,15 @@ async function fetchNextDataBatch(force = false) {
             sharedPointsState.aTangent = od['A_tangent'];
             console.log('[App] Set sharedPointsState.aTangent =', od['A_tangent']);
           }
+        }
+
+        // 存储后端返回的全局设置（finger_type, focal_length_mm, sensor_width_mm）
+        if ((apiData as any).globalSettings) {
+          const gs = (apiData as any).globalSettings;
+          if (gs.finger_type) sharedPointsState.fingerType = gs.finger_type;
+          if (gs.focal_length_mm) sharedPointsState.focalLengthMm = gs.focal_length_mm;
+          if (gs.sensor_width_mm) sharedPointsState.sensorWidthMm = gs.sensor_width_mm;
+          console.log('[App] GlobalSettings:', gs);
         }
 
         // 3. 清理局部场景数据
