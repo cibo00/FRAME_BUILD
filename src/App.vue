@@ -811,13 +811,11 @@ async function fetchNextDataBatch(force = false) {
       }
       newScenes.push(scene);
     }
-    
-    // 2. 初始化全局共享状态 (仅在未初始化时执行)
-        if (sharedPointsState.positions.length === 0 && initialPositions.length > 0) {
-            // 使用深拷贝来避免引用问题
+
+    // 2. 更新全局共享状态（始终用后端数据更新）
+        if (initialPositions.length > 0) {
             sharedPointsState.positions = initialPositions.map(p => ({ ...p }));
             sharedPointsState.bezierPoints = initialBezierPoints.map(p => ({ ...p }));
-            console.log("✅ 全局共享点数据已初始化。");
         }
 
         // 始终从后端 outputData 更新可选参数（不受 localStorage 缓存影响）
@@ -1023,6 +1021,17 @@ async function loadDataByGroupId(groupId: string) {
 
     sharedPointsState.positions = initialPositions.map(p => ({ ...p }));
     sharedPointsState.bezierPoints = initialBezierPoints.map(p => ({ ...p }));
+
+    // 更新 xyRotation、aTangent 等全局参数
+    if (apiData.outputData) {
+      const od = apiData.outputData as any;
+      if (typeof od['xy_rotation'] === 'number') {
+        sharedPointsState.xyRotation = od['xy_rotation'];
+      }
+      if (typeof od['A_tangent'] === 'number') {
+        sharedPointsState.aTangent = od['A_tangent'];
+      }
+    }
 
     newScenes.forEach(scene => {
       delete scene.positions;

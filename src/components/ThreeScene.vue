@@ -45,7 +45,7 @@ watch(() => props.activeIndex, (v) => {
 const zoomLevel = vueRef(1);
 const imageScale = vueRef(1);
 
-let bgOffsetFromCenter: THREE.Vector3 | null = null;
+let bgOffsetFromCenter: THREE.Vector3 | null = null; // unused, kept for compat
 // 定义一个按场景 key 存储偏移量的 Map
 const sceneOffsetsMap = vueRef<Record<string, { r: number, u: number, f: number }>>({});
 
@@ -115,7 +115,7 @@ function resetCameraToProps() {
     } catch (e) {}
   }
   // 将滑条归零
-  try { pitchValue.value = 0; rollValue.value = 0; yawValue.value = 0; if (props.sceneData) (props.sceneData as any).cameraDelta = { pitchDelta:0, rollDelta:0, yawDelta:0 }; try { saveCameraDeltaForScene(currentSceneKey.value); } catch(e) {} } catch (e) {}
+  try { pitchValue.value = 0; rollValue.value = 0; yawValue.value = 0; try { saveCameraDeltaForScene(currentSceneKey.value); } catch(e) {} } catch (e) {}
 }
 
 // 重置图片位置
@@ -125,25 +125,11 @@ function resetImagePosition() {
   const cameraDirection = new THREE.Vector3();
   camera.getWorldDirection(cameraDirection);
 
-  // 1. 将背景中心定位在：dataCenter + (相机朝向 * planeDistance)
-  // 这里的 planeDistance 如果为 0，则图片中心与 dataCenter 重合
-  const planeDistance = 50; // 可以根据需要调整距离
-  const newPosition = dataCenter.value.clone().add(cameraDirection.clone().multiplyScalar(planeDistance));
-  backgroundPlane.position.copy(newPosition);
-
-  // 2. 让图片正对相机
+  const planeDistance = 50;
+  backgroundPlane.position.copy(dataCenter.value.clone().add(cameraDirection.clone().multiplyScalar(planeDistance)));
   backgroundPlane.quaternion.copy(camera.quaternion);
-  
+
   recordCurrentOffsets();
-
-  // 3. 【关键】记录相对于 dataCenter 的世界空间偏移
-  bgOffsetFromCenter = backgroundPlane.position.clone().sub(dataCenter.value);
-
-  // 4. 更新同步用的局部四元数（保持图片始终平行于相机平面）
-  const invCamQuat = camera.quaternion.clone().invert();
-  bgLocalQuat = invCamQuat.multiply(backgroundPlane.quaternion.clone());
-
-  // 7. 保存状态
   if (props.sceneData) {
     props.sceneData.backgroundPlanePosition = {
       x: backgroundPlane.position.x,
@@ -152,7 +138,7 @@ function resetImagePosition() {
     };
   }
   saveStateToLocalStorage();
-  console.log('背景图片位置已复位到 dataCenter 前方');
+  console.log('背景图片位置已复位');
 }
 
 // 记录当前背景图片相对于相机坐标系的偏移量到 sceneOffsetsMap
@@ -365,92 +351,58 @@ function syncBackgroundToCamera() {
   }
 }
 
-// 背景与摄像机的本地关系（在加载图片时计算并保持）
-let bgLocalOffset: THREE.Vector3 | null = null; // 在相机坐标系下的偏移向量
-let bgLocalQuat: THREE.Quaternion | null = null; // 相机空间下的背景相对四元数
+// 背景与摄像机的本地关系（相机固定后不再使用）
+let bgLocalOffset: THREE.Vector3 | null = null;
+let bgLocalQuat: THREE.Quaternion | null = null;
 let currentDragged: THREE.Object3D | null = null;
 
-// 摇杆事件与摄像机绕 dataCenter 旋转的实现
+// 滑条增量在世界坐标系下应用，避免基准旋转导致轴重合
 function applySlidersToCamera() {
-  if (!camera || !controls) return;
+  if (!modelGroup) return;
 
-  // 1. 获取基准姿态（后端传来的初始角度）
-  // 注意：这里我们重新构建基准的四元数，而不是直接加减数字
   const baseEuler = new THREE.Euler(
     THREE.MathUtils.degToRad(baseCameraEulerDeg.value[0] || 0),
     THREE.MathUtils.degToRad(baseCameraEulerDeg.value[1] || 0),
     THREE.MathUtils.degToRad(baseCameraEulerDeg.value[2] || 0),
-    'XYZ' // 保持和 applyCameraRotationFromArray 一致的旋转顺序
+    'XYZ'
   );
   const baseQuaternion = new THREE.Quaternion().setFromEuler(baseEuler);
 
-  // 2. 计算滑条带来的“增量”旋转
-  // 我们使用 YXZ 顺序构建增量 Euler，这通常更符合第一人称视角的直觉（先偏航，再俯仰）
-  // 这样滑条代表的是：在“基准视角”的基础上，向左/右转(Yaw)，向上/下看(Pitch)，向侧面歪(Roll)
-  const deltaEuler = new THREE.Euler(
-    THREE.MathUtils.degToRad(pitchValue.value), // X轴增量
-    THREE.MathUtils.degToRad(yawValue.value),   // Y轴增量
-    THREE.MathUtils.degToRad(rollValue.value),  // Z轴增量
-    'YXZ' 
+  // 分别绕世界坐标轴构建增量，保证 Pitch/Yaw/Roll 始终独立
+  const pitchQ = new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(1, 0, 0), THREE.MathUtils.degToRad(pitchValue.value)
   );
-  const deltaQuaternion = new THREE.Quaternion().setFromEuler(deltaEuler);
+  const yawQ = new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(yawValue.value)
+  );
+  const rollQ = new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(0, 0, 1), THREE.MathUtils.degToRad(rollValue.value)
+  );
 
-  // 3. 核心修复：使用四元数乘法叠加旋转
-  // baseQuaternion.multiply(deltaQuaternion) 表示在 base 的“本地坐标系”下应用 delta 旋转
-  const targetQuaternion = baseQuaternion.clone().multiply(deltaQuaternion);
+  // 世界坐标系下叠加：delta * base，而非 base * delta
+  const deltaQuaternion = rollQ.multiply(yawQ).multiply(pitchQ);
 
-  // 4. 应用到相机
-  const center = dataCenter.value;
-  controls.target.copy(center);
-  camera.quaternion.copy(targetQuaternion);
+  // 世界坐标系叠加：先 delta 再 base
+  const targetQuaternion = deltaQuaternion.clone().multiply(baseQuaternion);
+  modelGroup.quaternion.copy(targetQuaternion);
 
-  // 5. 根据新的旋转计算位置（保持在 dataCenter 后方 300 距离）
-  const distance = 300;
-  const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(targetQuaternion);
-  camera.position.copy(center.clone().sub(forward.multiplyScalar(distance)));
-  
-  // 更新 Up 向量
-  const newUp = new THREE.Vector3(0, 1, 0).applyQuaternion(targetQuaternion);
-  camera.up.copy(newUp);
-  
-  controls.update();
-  syncBackgroundToCamera();
-
-  // 更新 baseSpherical (如果需要)
-  try {
-    const rel = camera.position.clone().sub(center);
-    baseSpherical = new THREE.Spherical();
-    baseSpherical.setFromVector3(rel);
-  } catch (e) {}
-
-  // 6. 保存状态 (保持不变，因为我们存的还是滑条数值，逻辑兼容)
-  try {
-    if (props.sceneData) {
-      (props.sceneData as any).cameraDelta = {
-        pitchDelta: pitchValue.value,
-        rollDelta: rollValue.value,
-        yawDelta: yawValue.value
-      };
-      try { saveCameraDeltaForScene(currentSceneKey.value); } catch (e) {}
-    }
-  } catch (e) {}
+  // 仅保存到 localStorage，不写入 props 避免触发深层 watcher
+  try { saveCameraDeltaForScene(currentSceneKey.value); } catch (e) {}
 }
 
-// 将后端/props 中的旋转数据应用到相机并初始化 baseSpherical
+// 将后端/props 中的旋转数据应用到模型组
 // 支持 3 元素欧拉角 [x,y,z]（度）和 4 元素四元数 [x,y,z,w]
 function applyCameraRotationFromArray(newRotation: number[]) {
-  if (!camera || !controls) return;
+  if (!modelGroup) return;
   try {
     let targetQuaternion: THREE.Quaternion;
 
     if (newRotation.length === 4) {
-      // ====== 四元数模式 — 直接使用后端原始四元数 ======
       const qBackend = new THREE.Quaternion(
         newRotation[0], newRotation[1], newRotation[2], newRotation[3]
       );
       targetQuaternion = qBackend;
     } else {
-      // ====== 欧拉角模式（保持原有逻辑兼容）======
       let x_from_backend = newRotation[0];
       let y_from_backend = newRotation[1];
       let z_from_backend = newRotation[2];
@@ -467,11 +419,9 @@ function applyCameraRotationFromArray(newRotation: number[]) {
       );
       targetQuaternion = new THREE.Quaternion().setFromEuler(euler);
 
-      // 同步 baseCameraEulerDeg（滑条基准）— 仅欧拉角模式使用
       baseCameraEulerDeg.value = [x_from_backend, y_from_backend, z_from_backend];
     }
 
-    // 四元数模式下也同步 baseCameraEulerDeg（供滑条使用）
     if (newRotation.length === 4) {
       const eulerDeg = new THREE.Euler().setFromQuaternion(targetQuaternion, 'XYZ');
       const toDeg = 180 / Math.PI;
@@ -481,6 +431,9 @@ function applyCameraRotationFromArray(newRotation: number[]) {
         eulerDeg.z * toDeg
       ];
     }
+
+    // 应用四元数到模型组
+    modelGroup.quaternion.copy(targetQuaternion);
 
     // 保存到 localStorage（按场景映射）
     try {
@@ -498,31 +451,23 @@ function applyCameraRotationFromArray(newRotation: number[]) {
       } catch (e) {}
     } catch (e) {}
 
-    // 重新设定 controls 的 target 为 dataCenter
-    const center = dataCenter.value;
-    controls.target.copy(center);
-
-    // 应用四元数到相机，并根据相机朝向计算位置（确保朝向与位置一致）
-    camera.quaternion.copy(targetQuaternion);
-    // 在相机坐标系中，默认前向为 -Z。将其转换为世界空间并置于 dataCenter 后方 distance 距离
-    const distance = 300;
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(targetQuaternion);
-    camera.position.copy(center.clone().sub(forward.multiplyScalar(distance)));
-
-    // 更新 up（考虑 roll）
-    const newUp = new THREE.Vector3(0, 1, 0).applyQuaternion(targetQuaternion);
-    camera.up.copy(newUp);
-
-    controls.update();
-
-    // 初始化 baseSpherical 以便摇杆在此基础上叠加偏移
-    const rel = camera.position.clone().sub(center);
-    baseSpherical = new THREE.Spherical();
-    baseSpherical.setFromVector3(rel);
+    // 计算模型旋转相对于标准坐标轴的轴角差并打印
+    const q = targetQuaternion;
+    const angle = 2 * Math.acos(Math.min(1, Math.abs(q.w)));
+    const sinHalf = Math.sqrt(Math.max(0, 1 - q.w * q.w));
+    const axis = new THREE.Vector3(q.x, q.y, q.z).divideScalar(sinHalf || 1);
+    const angleDeg = angle * 180 / Math.PI;
+    const sceneKey = currentSceneKey.value || getSceneKey();
+    console.log(
+      `[模型旋转轴角] 场景: ${sceneKey}\n` +
+      `  后端原始: [${newRotation.join(', ')}]\n` +
+      `  轴: (${axis.x.toFixed(4)}, ${axis.y.toFixed(4)}, ${axis.z.toFixed(4)})\n` +
+      `  角: ${angleDeg.toFixed(2)}° (${angle.toFixed(6)} rad)\n` +
+      `  四元数: (${q.x.toFixed(4)}, ${q.y.toFixed(4)}, ${q.z.toFixed(4)}, ${q.w.toFixed(4)})`
+    );
   } catch (e) {
     console.warn('applyCameraRotationFromArray failed', e);
   }
-  // 记录最后一次应用的后端相机数组（按后端格式）
   try { lastAppliedCameraRotation = newRotation.slice(); } catch (e) {}
 }
 
@@ -540,6 +485,7 @@ function saveCurrentCameraRotationToProps() {
 let scene: THREE.Scene
 let camera: THREE.PerspectiveCamera;
 let renderer: THREE.WebGLRenderer | undefined;
+let modelGroup: THREE.Group;
 const spheres: THREE.Mesh[] = []
 const bezier_points: THREE.Mesh[] = []
 // let curveObjects: THREE.Line[] = []
@@ -649,6 +595,7 @@ let dragControls: DragControls | undefined;
 const dragTargetPlane: THREE.Mesh | null = null;
 let draggableObjects: THREE.Mesh[] = [];
 let backgroundPlane: THREE.Mesh | null = null; // <-- 添加这一行
+let lastLoadedBgImage: string = ''; // 记录上次加载的背景图片URL，避免重复重建
 const bgCenter: THREE.Vector3 = new THREE.Vector3(); // 背景图片中心（独立于 dataCenter）
 //let draggableImage: THREE.Mesh[] = []; // <-- 新增: 存储背景图片 Mesh
 
@@ -839,7 +786,7 @@ function loadCameraDeltaForScene(key: string | null) {
     if (entry && typeof entry.pitchDelta === 'number') pitchValue.value = entry.pitchDelta; else pitchValue.value = 0;
     if (entry && typeof entry.rollDelta === 'number') rollValue.value = entry.rollDelta; else rollValue.value = 0;
     if (entry && typeof entry.yawDelta === 'number') yawValue.value = entry.yawDelta; else yawValue.value = 0;
-    if (props.sceneData) (props.sceneData as any).cameraDelta = { pitchDelta: pitchValue.value, rollDelta: rollValue.value, yawDelta: yawValue.value };
+    // 不写入 props.sceneData.cameraDelta，避免触发深层 watcher 级联
   } catch (e) {
     try {
       const d = (props.sceneData as any)?.cameraDelta;
@@ -920,7 +867,7 @@ function saveCameraDeltaForScene(key: string | null) {
     try { map = raw ? JSON.parse(raw) : {}; } catch (e) { map = {}; }
     map[key] = { pitchDelta: pitchValue.value, rollDelta: rollValue.value, yawDelta: yawValue.value };
     try { localStorage.setItem(CAMERA_DELTA_MAP_KEY, JSON.stringify(map)); } catch (e) {}
-    try { if (props.sceneData) (props.sceneData as any).cameraDelta = map[key]; } catch (e) {}
+    // 不写入 props.sceneData.cameraDelta，避免触发深层 watcher 导致闪烁
   } catch (e) {}
 }
 
@@ -1107,10 +1054,9 @@ function saveStateToLocalStorage() {
       undoStack: undoStack.value,
       redoStack: redoStack.value
     };
-    // 如果存在相机，则保存摄像机位置与四元数
-    if (typeof camera !== 'undefined' && camera) {
-      state.cameraPosition = { x: camera.position.x, y: camera.position.y, z: camera.position.z };
-      state.cameraQuaternion = { x: camera.quaternion.x, y: camera.quaternion.y, z: camera.quaternion.z, w: camera.quaternion.w };
+    // 保存模型组四元数（替代旧的相机四元数）
+    if (typeof modelGroup !== 'undefined' && modelGroup) {
+      state.modelGroupQuaternion = { x: modelGroup.quaternion.x, y: modelGroup.quaternion.y, z: modelGroup.quaternion.z, w: modelGroup.quaternion.w };
     }
     // 合并已存在的 persisted scenes（仅保留 metadata，不把 shared 点写入到单独场景中）
     try {
@@ -1893,7 +1839,7 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
   // 清理旧曲线
   if (curveObjects.length > 0) {
     for (let i = 0; i < curveObjects.length; i++) {
-      scene.remove(curveObjects[i]);
+      modelGroup.remove(curveObjects[i]);
     }
     curveObjects = [];
   }
@@ -1901,7 +1847,7 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
   // 清理旧的连线（如果有选中的关联，需要先隐藏其连线）
   if (selectedAssociation) {
     for (const line of selectedAssociation.lines) {
-      scene.remove(line);
+      modelGroup.remove(line);
     }
   }
 
@@ -1987,7 +1933,7 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
     const adArcGeometry = new THREE.BufferGeometry().setFromPoints(AD_arc_points);
     const adArcMaterial = new THREE.LineBasicMaterial({ color: 0xffff00 });
     const adArcObject = new THREE.Line(adArcGeometry, adArcMaterial);
-    scene.add(adArcObject);
+    modelGroup.add(adArcObject);
     curveObjects.push(adArcObject);
 
     //  计算交点
@@ -2012,12 +1958,12 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
     const AD_BFArcGeometry = new THREE.BufferGeometry().setFromPoints(AD_BF_intersection_3d ? [AD_BF_intersection_3d] : []);
     const AD_BFMaterial = new THREE.PointsMaterial({ color: 0x00ff00, size: 0.4 });
     const AD_BFObject = new THREE.Points(AD_BFArcGeometry, AD_BFMaterial);
-    scene.add(AD_BFObject);
+    modelGroup.add(AD_BFObject);
     curveObjects.push(AD_BFObject);
     const AD_CEArcGeometry = new THREE.BufferGeometry().setFromPoints(AD_CE_intersection_3d ? [AD_CE_intersection_3d] : []);
     const AD_CEMaterial = new THREE.PointsMaterial({ color: 0x00ff00, size: 0.4 });
     const AD_CEObject = new THREE.Points(AD_CEArcGeometry, AD_CEMaterial);
-    scene.add(AD_CEObject);
+    modelGroup.add(AD_CEObject);
     curveObjects.push(AD_CEObject);
 
 
@@ -2038,12 +1984,12 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
     const BF_arc_pointsGeometry = new THREE.BufferGeometry().setFromPoints(BF_arc_points);
     const BF_arc_pointsMaterial = new THREE.LineBasicMaterial({ color: 0xffa500 });
     const BF_arc_pointsObject = new THREE.Line(BF_arc_pointsGeometry, BF_arc_pointsMaterial);
-    scene.add(BF_arc_pointsObject);
+    modelGroup.add(BF_arc_pointsObject);
     curveObjects.push(BF_arc_pointsObject);
     const CE_arc_pointsGeometry = new THREE.BufferGeometry().setFromPoints(CE_arc_points);
     const CE_arc_pointsMaterial = new THREE.LineBasicMaterial({ color: 0xffa500 });
     const CE_arc_pointsObject = new THREE.Line(CE_arc_pointsGeometry, CE_arc_pointsMaterial);
-    scene.add(CE_arc_pointsObject);
+    modelGroup.add(CE_arc_pointsObject);
     curveObjects.push(CE_arc_pointsObject);
 
     //console.log(`BF_arc_points size: "${BF_arc_points.length}",CE_arc_points size: "${CE_arc_points.length}" `);
@@ -2081,12 +2027,12 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
     const A_end_regularized_edgeGeometry = new THREE.BufferGeometry().setFromPoints(A_end_regularized_edge_points);
     const A_end_regularized_edgeMaterial = new THREE.LineBasicMaterial({ color: 0x00ff00 });
     const A_end_regularized_edgeObject = new THREE.Line(A_end_regularized_edgeGeometry, A_end_regularized_edgeMaterial);
-    scene.add(A_end_regularized_edgeObject);
+    modelGroup.add(A_end_regularized_edgeObject);
     curveObjects.push(A_end_regularized_edgeObject);
     const D_end_regularized_edgeGeometry = new THREE.BufferGeometry().setFromPoints(D_end_regularized_edge_points);
     const D_end_regularized_edgeMaterial = new THREE.LineBasicMaterial({ color: 0x00ff00 });
     const D_end_regularized_edgeObject = new THREE.Line(D_end_regularized_edgeGeometry, D_end_regularized_edgeMaterial);
-    scene.add(D_end_regularized_edgeObject);
+    modelGroup.add(D_end_regularized_edgeObject);
     curveObjects.push(D_end_regularized_edgeObject);
 
 
@@ -2161,7 +2107,7 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
     const fillingPointsGeometry = new THREE.BufferGeometry().setFromPoints(toSamplePoints);
     const fillingPointsMaterial = new THREE.PointsMaterial({ color: 0x000000, size: 0.1 }); // 黑色
     const fillingPointsObject = new THREE.Points(fillingPointsGeometry, fillingPointsMaterial);
-    scene.add(fillingPointsObject);
+    modelGroup.add(fillingPointsObject);
     curveObjects.push(fillingPointsObject);
     }
     //   遍历您定义的每一条曲线规则（例如 "AB", "BC" ...）
@@ -2196,7 +2142,7 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
             const curveMaterial = new THREE.LineBasicMaterial({ color: 0xff00ff }); // 紫色
             const curveObject = new THREE.Line(curveGeometry, curveMaterial);
             
-            scene.add(curveObject);
+            modelGroup.add(curveObject);
             curveObjects.push(curveObject);
             // 不创建控制点之间的连线（贝塞尔曲线不需要显示控制点连线）
             const assocLines: THREE.Line[] = [];
@@ -2219,8 +2165,12 @@ onMounted(() => {
 
 
   scene = new THREE.Scene();
+  modelGroup = new THREE.Group();
+  scene.add(modelGroup);
   camera = new THREE.PerspectiveCamera(75, 1, 0.1, 1000);
-  camera.position.set(5, 0, 10);
+  camera.position.set(0, 0, 300);
+  camera.up.set(0, 1, 0);
+  camera.lookAt(0, 0, 0);
   const focalLengthMM = 50.0;
   const sensorWidthMM = 36.0;
   camera.filmGauge = sensorWidthMM;      // 设置传感器宽度
@@ -2242,21 +2192,21 @@ onMounted(() => {
   // 更新controls
   controls.update();
 
-  // 如果加载的数据中包含摄像机位置/四元数，则应用它们
+  // 相机固定在Z轴俯视，不再从 localStorage 恢复相机位置/四元数
+  // 如果有持久化的模型旋转四元数，恢复到 modelGroup
   if (persisted) {
     try {
-      if (persisted.cameraPosition && camera) {
-        camera.position.set(Number(persisted.cameraPosition.x) || camera.position.x, Number(persisted.cameraPosition.y) || camera.position.y, Number(persisted.cameraPosition.z) || camera.position.z);
+      if (persisted.modelGroupQuaternion && modelGroup) {
+        modelGroup.quaternion.set(
+          Number(persisted.modelGroupQuaternion.x) || 0,
+          Number(persisted.modelGroupQuaternion.y) || 0,
+          Number(persisted.modelGroupQuaternion.z) || 0,
+          Number(persisted.modelGroupQuaternion.w) || 1
+        );
       }
-      if (persisted.cameraQuaternion && camera) {
-        camera.quaternion.set(Number(persisted.cameraQuaternion.x) || camera.quaternion.x, Number(persisted.cameraQuaternion.y) || camera.quaternion.y, Number(persisted.cameraQuaternion.z) || camera.quaternion.z, Number(persisted.cameraQuaternion.w) || camera.quaternion.w);
-        camera.updateMatrixWorld(true);
-      }
-      // ensure controls target uses dataCenter if available
-      if (controls && dataCenter.value) controls.target.copy(dataCenter.value);
-      if (camera) camera.updateProjectionMatrix();
+      if (controls) controls.target.set(0, 0, 0);
     } catch (e) {
-      console.warn('Failed to apply persisted camera state', e);
+      console.warn('Failed to apply persisted model state', e);
     }
   }
 
@@ -2295,6 +2245,13 @@ onMounted(() => {
      dragControls.addEventListener('drag', function (event) {
       // 跳过已从 scene 移除的对象
       if (!event.object.parent) return;
+      // 模型组旋转后，DragControls 设置的是世界坐标，需要转回模型局部坐标
+      if (modelGroup && event.object.parent === modelGroup) {
+        const worldPos = new THREE.Vector3();
+        event.object.getWorldPosition(worldPos);
+        modelGroup.worldToLocal(worldPos);
+        event.object.position.copy(worldPos);
+      }
       // 在拖动过程中的每一帧，都调用 addBezier 函数重绘曲线（不隐藏标签）
       generateCustomBezierCurves(false);
       if (event.object === backgroundPlane && backgroundPlane.parent) {
@@ -2441,18 +2398,10 @@ onMounted(() => {
           // 保存到本地
           saveStateToLocalStorage();
         }
-        // 如果拖拽的是背景，更新其本地偏移与四元数，以便动画循环继续保持新的相对关系
-        if (draggedMesh === backgroundPlane && camera) {
-          try {
-            const invCamQuat = camera.quaternion.clone().invert();
-            bgLocalOffset = backgroundPlane.position.clone().sub(camera.position).applyQuaternion(invCamQuat);
-            bgLocalQuat = invCamQuat.multiply(backgroundPlane.quaternion.clone());
-          } catch (e) { /* ignore */ }
-        }
 
         if (event.object === backgroundPlane) {
-          recordCurrentOffsets(); // 确保最终位置被记录
-          saveStateToLocalStorage(); // 保存最终状态
+          recordCurrentOffsets();
+          saveStateToLocalStorage();
         }
 
       // 拖动结束后，如果之前有选中的关联，重新选择它以保持标签可见
@@ -2488,7 +2437,7 @@ onMounted(() => {
       controls.update(); // 每一帧都更新控制器
     }
   
-    syncBackgroundToCamera();
+    // 相机已固定，背景不再需要每帧同步
 
     // 标签避让
     relaxLabels();
@@ -2593,20 +2542,10 @@ watch(
     }
     //console.log("✅ 侦听器触发：场景已就绪，正在处理数据...");
 
-    // 清理旧的backgroundPlane
-    if (backgroundPlane) {
-      scene.remove(backgroundPlane);
-      backgroundPlane.geometry.dispose();
-      if (Array.isArray(backgroundPlane.material)) {
-        backgroundPlane.material.forEach(material => {
-          if ('map' in material && material.map instanceof THREE.Texture) material.map.dispose();
-          material.dispose();
-        });
-      } else {
-        if ('map' in backgroundPlane.material && backgroundPlane.material.map instanceof THREE.Texture) backgroundPlane.material.map.dispose();
-        backgroundPlane.material.dispose();
-      }
-      backgroundPlane = null;
+    // 检测 backgroundImage 是否真正变化
+    const bgImageChanged = newData.backgroundImage !== lastLoadedBgImage;
+    if (bgImageChanged && newData.backgroundImage) {
+      lastLoadedBgImage = newData.backgroundImage;
     }
 
     // 设置图片缩放比例
@@ -2621,30 +2560,30 @@ watch(
       const mesh = new THREE.Mesh(geometry, material.clone());
       const latestPos =  sharedPointsState.positions[spheres.length];
       mesh.position.set(latestPos.x, latestPos.y, latestPos.z);
-      scene.add(mesh);
+      modelGroup.add(mesh);
       spheres.push(mesh);
       // 同时创建并添加标签
       const label = makeTextSprite(latestPos.name, { fontsize: 32, fontface: "Arial", textColor: {r:255, g:255, b:255, a:1.0}});
       label.position.copy(computeLabelPosition(mesh.position));
       // 默认不显示标签，点击曲线时再显示对应端点标签
       label.visible = false;
-      scene.add(label);
+      modelGroup.add(label);
       sphereLabels.push(label);
       // 创建指示线（从球体到标签）
       const lineGeom = new THREE.BufferGeometry().setFromPoints([mesh.position.clone(), label.position.clone()]);
       const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff });
       const leader = new THREE.Line(lineGeom, lineMat);
       leader.renderOrder = 9998;
-      scene.add(leader);
+      modelGroup.add(leader);
       sphereLabelLines.push(leader);
     }
     while ( sharedPointsState.positions.length < spheres.length) {
       const removedMesh = spheres.pop();
-      if (removedMesh) scene.remove(removedMesh);
+      if (removedMesh) modelGroup.remove(removedMesh);
       const removedLabel = sphereLabels.pop();
-      if (removedLabel) scene.remove(removedLabel);
+      if (removedLabel) modelGroup.remove(removedLabel);
       const removedLine = sphereLabelLines.pop();
-      if (removedLine) scene.remove(removedLine);
+      if (removedLine) modelGroup.remove(removedLine);
     }
     if (!isDragging.value) {
        sharedPointsState.positions.forEach((pos, i) => {
@@ -2673,7 +2612,7 @@ watch(
       const mesh = new THREE.Mesh(geometry_Bezier, material_Bezier.clone());
       const latestPos =  sharedPointsState.bezierPoints[bezier_points.length];
       mesh.position.set(latestPos.x, latestPos.y, latestPos.z);
-      scene.add(mesh);
+      modelGroup.add(mesh);
       bezier_points.push(mesh);
       // 同时创建并添加标签
       const label = makeTextSprite(latestPos.name, { fontsize: 24, fontface: "Arial", textColor: {r:255, g:255, b:255, a:1.0}});
@@ -2681,23 +2620,23 @@ watch(
       // 默认隐藏贝塞尔控制点与标签，点击曲线时再显示
       mesh.visible = false;
       label.visible = false;
-      scene.add(label);
+      modelGroup.add(label);
       bezierLabels.push(label);
       // 创建指示线（从贝塞尔点到标签）
       const bLineGeom = new THREE.BufferGeometry().setFromPoints([mesh.position.clone(), label.position.clone()]);
       const bLineMat = new THREE.LineBasicMaterial({ color: 0xffffff });
       const bleader = new THREE.Line(bLineGeom, bLineMat);
       bleader.renderOrder = 9998;
-      scene.add(bleader);
+      modelGroup.add(bleader);
       bezierLabelLines.push(bleader);
     }
     while ( sharedPointsState.bezierPoints.length < bezier_points.length) {
       const removedMesh = bezier_points.pop();
-      if (removedMesh) scene.remove(removedMesh);
+      if (removedMesh) modelGroup.remove(removedMesh);
       const removedLabel = bezierLabels.pop();
-      if (removedLabel) scene.remove(removedLabel);
+      if (removedLabel) modelGroup.remove(removedLabel);
       const removedBLine = bezierLabelLines.pop();
-      if (removedBLine) scene.remove(removedBLine);
+      if (removedBLine) modelGroup.remove(removedBLine);
     }
     if (!isDragging.value) {
        sharedPointsState.bezierPoints.forEach((pos, i) => {
@@ -2719,6 +2658,11 @@ watch(
 
     // 更新可拖拽对象列表
     draggableObjects = [...spheres, ...bezier_points];
+    if (allowBackgroundDrag.value && backgroundPlane && backgroundPlane.parent) {
+      if (!draggableObjects.includes(backgroundPlane)) {
+        draggableObjects.push(backgroundPlane);
+      }
+    }
     if (dragControls) {
       dragControls.objects = draggableObjects;
     }
@@ -2735,10 +2679,17 @@ watch(
         });
         dataBoundingBox.getCenter(dataCenter.value);
     }
+    // 首次定位相机到坐标原点正上方（Z轴俯视），视点为原点
+    if (camera && controls) {
+      camera.position.set(0, 0, 300);
+      camera.lookAt(0, 0, 0);
+      controls.target.set(0, 0, 0);
+      controls.update();
+    }
   }
     // --- 更新相机视角 (cameraRotation) ---
     const newRotation = newData.cameraRotation;
-    if (camera && controls && newRotation && (newRotation.length === 3 || newRotation.length === 4)) {
+    if (modelGroup && newRotation && (newRotation.length === 3 || newRotation.length === 4)) {
       // 仅当后端的 cameraRotation 与上次应用的不同时才应用
       const needApply = !lastAppliedCameraRotation || !(
         lastAppliedCameraRotation.length === newRotation.length &&
@@ -2749,7 +2700,7 @@ watch(
       );
       if (needApply) {
         applyCameraRotationFromArray(newRotation);
-        // 应用后恢复该场景保存的滑条偏移（如果有）
+        // 基准旋转已应用，如果有滑条增量则叠加
         if (pitchValue.value !== 0 || rollValue.value !== 0 || yawValue.value !== 0) {
           applySlidersToCamera();
         }
@@ -2767,7 +2718,7 @@ watch(
     }
 
     // --- 加载背景图片 ---
-    if (newData.backgroundImage) {
+    if (newData.backgroundImage && bgImageChanged) {
       const textureLoader = new THREE.TextureLoader();
       textureLoader.load(newData.backgroundImage, (texture) => {
         // 防止图片亮度提升
@@ -2820,59 +2771,32 @@ watch(
         //   获取相机当前的朝向
         const cameraDirection = new THREE.Vector3();
         camera.getWorldDirection(cameraDirection);
-       
-        // 背景位置初始为 props 中保存的位置（若有），否则初始化为 dataCenter
+
+        // 背景位置：优先恢复保存的位置，否则初始化为 dataCenter 前方
         if (newData.backgroundPlanePosition) {
-          bgCenter.set(newData.backgroundPlanePosition.x, newData.backgroundPlanePosition.y, newData.backgroundPlanePosition.z);
+          backgroundPlane.position.set(
+            newData.backgroundPlanePosition.x,
+            newData.backgroundPlanePosition.y,
+            newData.backgroundPlanePosition.z
+          );
         } else {
-          bgCenter.copy(dataCenter.value);
+          const planeDistance = 50;
+          backgroundPlane.position.copy(dataCenter.value.clone().add(cameraDirection.clone().multiplyScalar(planeDistance)));
         }
-        //  计算平面的位置：从相机位置出发，沿着朝向移动一段距离
-        //    这个距离应该比相机到 dataCenter 的距离更远
-        const planeDistance = 50; // 例如，可以设置为一个较大的固定值
-        backgroundPlane.position.copy(bgCenter.clone().add(cameraDirection.clone().multiplyScalar(planeDistance)));
-              
-        //   让平面的旋转姿态与相机完全相同（保持加载时与相机的相对关系）
+
+        //   让平面的旋转姿态与相机完全相同
         backgroundPlane.quaternion.copy(camera.quaternion);
-        const rotationAxis = new THREE.Vector3();
-        camera.getWorldDirection(rotationAxis);
-        const rollQuaternion = new THREE.Quaternion();
-        rollQuaternion.setFromAxisAngle(rotationAxis, THREE.MathUtils.degToRad(rollAngle.value));
-        backgroundPlane.quaternion.premultiply(rollQuaternion);
 
-        // <--- 关键修改 3: 应用保存的位置 --->
-        if (backgroundPlane && newData.backgroundPlanePosition) {
-            backgroundPlane.position.set(
-                newData.backgroundPlanePosition.x,
-                newData.backgroundPlanePosition.y,
-                newData.backgroundPlanePosition.z
-            );
-            //console.log("已恢复图片到保存的位置。");
-        }
-        // ---------------------------------
-
-        //   将计算好的平面添加到世界场景中
+        //   将平面添加到世界场景中
         scene.add(backgroundPlane);
-        
+
         // 设置初始scale
-          backgroundPlane.scale.set(imageScale.value, imageScale.value, 1);
+        backgroundPlane.scale.set(imageScale.value, imageScale.value, 1);
 
-          // 记录背景在相机局部坐标系下的相对位姿，便于后续保持相对关系
-          try {
-            const invCamQuat = camera.quaternion.clone().invert();
-            bgLocalOffset = backgroundPlane.position.clone().sub(camera.position).applyQuaternion(invCamQuat);
-            bgLocalQuat = invCamQuat.multiply(backgroundPlane.quaternion.clone());
-          } catch (e) {
-            bgLocalOffset = null;
-            bgLocalQuat = null;
-          }
-
-        // ⭐ 关键修改 3: 根据 dataCenter 距离决定背景图片是否可拖拽
+        // 设置背景是否可拖拽
         if (backgroundPlane) {
-          // 根据用户开关决定是否将 backgroundPlane 加入可拖拽物体
           setBackgroundDraggable(allowBackgroundDrag.value);
         }
-        // ---------------------------------------------
 
         //console.log(`背景图片已更新: ${newData.backgroundImage}`);
       }, undefined, (error) => {
