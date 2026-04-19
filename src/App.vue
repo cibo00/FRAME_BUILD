@@ -650,7 +650,13 @@ function getCorrectedQuaternion(scene: any): number[] {
   // 非4元素时直接返回原始值
   if (!rot || rot.length !== 4) return rot;
 
-  const qBase = new THREE.Quaternion(rot[0], rot[1], rot[2], rot[3]);
+  // 后端四元数协议为 [w, x, y, z]；前端滑条叠加基于固定相机下的模型姿态，因此先重排并取逆
+  const qBase = new THREE.Quaternion(
+    Number(rot[1]) || 0,
+    Number(rot[2]) || 0,
+    Number(rot[3]) || 0,
+    Number(rot[0]) || 1,
+  ).normalize().invert();
 
   // 读取该场景的滑条增量
   const sceneKey = scene.backgroundImage || 'default_scene';
@@ -671,13 +677,21 @@ function getCorrectedQuaternion(scene: any): number[] {
   // 无增量时直接返回原始四元数
   if (pitchDelta === 0 && yawDelta === 0 && rollDelta === 0) return rot;
 
-  const corrected = composeQuaternionFromBaseAndDeltas(
+  const correctedModelQuaternion = composeQuaternionFromBaseAndDeltas(
     qBase,
     pitchDelta,
     yawDelta,
     rollDelta,
   );
-  return [corrected.x, corrected.y, corrected.z, corrected.w];
+
+  // 导出时恢复成后端协议：camera quaternion、顺序为 [w, x, y, z]
+  const correctedCameraQuaternion = correctedModelQuaternion.clone().invert();
+  return [
+    correctedCameraQuaternion.w,
+    correctedCameraQuaternion.x,
+    correctedCameraQuaternion.y,
+    correctedCameraQuaternion.z,
+  ];
 }
 
 // 从 scenesData 构建 output_data（后端格式，点名为 key，坐标为 [x, y]）

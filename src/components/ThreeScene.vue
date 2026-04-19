@@ -348,8 +348,8 @@ function updateCameraPrecisionFromProps() {
     if (cr && Array.isArray(cr) && (cr.length === 3 || cr.length === 4)) {
       let x: number, y: number, z: number;
       if (cr.length === 4) {
-        // Quaternion → euler for precision calc
-        const q = new THREE.Quaternion(cr[0], cr[1], cr[2], cr[3]);
+        // 与实际显示链路保持一致：后端四元数先按协议重排/取逆，再转 Euler 用于精度显示
+        const q = buildFrontendQuaternionFromRotation(cr).quaternion;
         const euler = new THREE.Euler().setFromQuaternion(q, 'XYZ');
         const toDeg = 180 / Math.PI;
         x = euler.x * toDeg;
@@ -430,16 +430,142 @@ function composeQuaternionFromBaseAndDeltas(
   return baseQuaternion.clone().multiply(localDelta);
 }
 
+function convertBackendEulerToFrontendEulerDeg(rotation: number[]): [number, number, number] {
+  const x_from_backend = Number(rotation[0]) || 0;
+  const y_from_backend = Number(rotation[1]) || 0;
+  const z_from_backend = Number(rotation[2]) || 0;
+
+  return [
+    -x_from_backend,
+    -y_from_backend,
+    90 - z_from_backend,
+  ];
+}
+
+function quaternionToEulerDeg(quaternion: THREE.Quaternion): [number, number, number] {
+  const euler = new THREE.Euler().setFromQuaternion(quaternion, 'XYZ');
+  const toDeg = 180 / Math.PI;
+  return [euler.x * toDeg, euler.y * toDeg, euler.z * toDeg];
+}
+
+function buildFrontendQuaternionFromRotation(rotation: number[]): {
+  quaternion: THREE.Quaternion,
+  baseEulerDeg: [number, number, number],
+} {
+  let quaternion: THREE.Quaternion;
+
+  if (rotation.length === 4) {
+    // 后端四元数按 [w, x, y, z] 传入；three.js 需要 [x, y, z, w]
+    const qBackend = new THREE.Quaternion(
+      Number(rotation[1]) || 0,
+      Number(rotation[2]) || 0,
+      Number(rotation[3]) || 0,
+      Number(rotation[0]) || 1,
+    ).normalize();
+
+    // 后端字段虽然命名为 cameraRotation，但前端实际是把它作用到 modelGroup。
+    // 为了在固定相机下复现相机姿态效果，这里取逆转成模型姿态。
+    quaternion = qBackend.clone().invert();
+  } else {
+    const baseEulerDeg = convertBackendEulerToFrontendEulerDeg(rotation);
+    quaternion = new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(
+        THREE.MathUtils.degToRad(baseEulerDeg[0]),
+        THREE.MathUtils.degToRad(baseEulerDeg[1]),
+        THREE.MathUtils.degToRad(baseEulerDeg[2]),
+        'XYZ'
+      )
+    );
+  }
+
+  return {
+    quaternion,
+    baseEulerDeg: quaternionToEulerDeg(quaternion),
+  };
+}
+
+function getRotationMapFromStorage(): Record<string, number[]> {
+  try {
+    const raw = localStorage.getItem(ORIGINAL_ROTATION_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function setRotationMapEntry(key: string, rotation: number[]) {
+  try {
+    const map = getRotationMapFromStorage();
+    map[key] = rotation.slice();
+    localStorage.setItem(ORIGINAL_ROTATION_KEY, JSON.stringify(map));
+  } catch (e) {}
+}
+
+function getBaseEulerDegForRotation(rotation: number[] | null | undefined): [number, number, number] | null {
+  if (!rotation || !Array.isArray(rotation) || rotation.length < 3) return null;
+  try {
+    return buildFrontendQuaternionFromRotation(rotation).baseEulerDeg;
+  } catch (e) {
+    return null;
+  }
+}
+
+function getRotationForScene(key: string | null): number[] | null {
+  const propsRotation = props.sceneData?.cameraRotation;
+  if (propsRotation && Array.isArray(propsRotation) && (propsRotation.length === 3 || propsRotation.length === 4)) {
+    return propsRotation.slice();
+  }
+  if (!key) return null;
+  const arr = getRotationMapFromStorage()[key];
+  if (Array.isArray(arr) && (arr.length === 3 || arr.length === 4)) {
+    return arr.slice();
+  }
+  return null;
+}
+
+function clearStaleModelGroupQuaternion() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const state = JSON.parse(raw);
+    if (state && typeof state === 'object' && 'modelGroupQuaternion' in state) {
+      delete state.modelGroupQuaternion;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    }
+  } catch (e) {}
+}
+
+function clearLegacyRotationCache() {
+  try {
+    const map = getRotationMapFromStorage();
+    let mutated = false;
+    for (const key of Object.keys(map)) {
+      const value = map[key];
+      if (!Array.isArray(value) || (value.length !== 3 && value.length !== 4)) {
+        delete map[key];
+        mutated = true;
+      }
+    }
+    if (mutated) {
+      localStorage.setItem(ORIGINAL_ROTATION_KEY, JSON.stringify(map));
+    }
+  } catch (e) {}
+}
+
 function applySlidersToCamera() {
   if (!modelGroup) return;
 
-  const baseEuler = new THREE.Euler(
-    THREE.MathUtils.degToRad(baseCameraEulerDeg.value[0] || 0),
-    THREE.MathUtils.degToRad(baseCameraEulerDeg.value[1] || 0),
-    THREE.MathUtils.degToRad(baseCameraEulerDeg.value[2] || 0),
-    'XYZ'
-  );
-  const baseQuaternion = new THREE.Quaternion().setFromEuler(baseEuler);
+  const rotation = getRotationForScene(currentSceneKey.value);
+  const baseQuaternion = rotation
+    ? buildFrontendQuaternionFromRotation(rotation).quaternion
+    : new THREE.Quaternion().setFromEuler(new THREE.Euler(
+        THREE.MathUtils.degToRad(baseCameraEulerDeg.value[0] || 0),
+        THREE.MathUtils.degToRad(baseCameraEulerDeg.value[1] || 0),
+        THREE.MathUtils.degToRad(baseCameraEulerDeg.value[2] || 0),
+        'XYZ'
+      ));
   const targetQuaternion = composeQuaternionFromBaseAndDeltas(
     baseQuaternion,
     pitchValue.value,
@@ -447,6 +573,7 @@ function applySlidersToCamera() {
     rollValue.value,
   );
 
+  baseCameraEulerDeg.value = quaternionToEulerDeg(baseQuaternion);
   modelGroup.quaternion.copy(targetQuaternion);
 
   try { saveCameraDeltaForScene(currentSceneKey.value); } catch (e) {}
@@ -457,60 +584,16 @@ function applySlidersToCamera() {
 function applyCameraRotationFromArray(newRotation: number[]) {
   if (!modelGroup) return;
   try {
-    let targetQuaternion: THREE.Quaternion;
-
-    if (newRotation.length === 4) {
-      const qBackend = new THREE.Quaternion(
-        newRotation[0], newRotation[1], newRotation[2], newRotation[3]
-      );
-      targetQuaternion = qBackend;
-    } else {
-      let x_from_backend = newRotation[0];
-      let y_from_backend = newRotation[1];
-      let z_from_backend = newRotation[2];
-
-      x_from_backend = -x_from_backend;
-      y_from_backend = -y_from_backend;
-      z_from_backend = 90 - z_from_backend;
-
-      const euler = new THREE.Euler(
-        THREE.MathUtils.degToRad(x_from_backend),
-        THREE.MathUtils.degToRad(y_from_backend),
-        THREE.MathUtils.degToRad(z_from_backend),
-        'XYZ'
-      );
-      targetQuaternion = new THREE.Quaternion().setFromEuler(euler);
-
-      baseCameraEulerDeg.value = [x_from_backend, y_from_backend, z_from_backend];
-    }
-
-    if (newRotation.length === 4) {
-      const eulerDeg = new THREE.Euler().setFromQuaternion(targetQuaternion, 'XYZ');
-      const toDeg = 180 / Math.PI;
-      baseCameraEulerDeg.value = [
-        eulerDeg.x * toDeg,
-        eulerDeg.y * toDeg,
-        eulerDeg.z * toDeg
-      ];
-    }
+    const { quaternion: targetQuaternion, baseEulerDeg } = buildFrontendQuaternionFromRotation(newRotation);
+    baseCameraEulerDeg.value = baseEulerDeg;
 
     // 应用四元数到模型组
     modelGroup.quaternion.copy(targetQuaternion);
 
-    // 保存到 localStorage（按场景映射）
+    // 保存真正的原始 rotation 到 localStorage（按场景映射）
     try {
-      const rawMap = localStorage.getItem(ORIGINAL_ROTATION_KEY);
-      let map: Record<string, any> = {};
-      try {
-        map = rawMap ? JSON.parse(rawMap) : {};
-      } catch (e) {
-        map = {};
-      }
       const key = getSceneKey();
-      map[key] = baseCameraEulerDeg.value.slice();
-      try {
-        localStorage.setItem(ORIGINAL_ROTATION_KEY, JSON.stringify(map));
-      } catch (e) {}
+      setRotationMapEntry(key, newRotation);
     } catch (e) {}
 
     // 计算模型旋转相对于标准坐标轴的轴角差并打印
@@ -879,44 +962,23 @@ function getOriginalRotationForScene(key: string | null): number[] | null {
   }
 }
 
-// 将原始后端角度加载为 baseCameraEulerDeg（度）
-// 支持 3 元素欧拉角和 4 元素四元数（从 props.cameraRotation 或 ORIGINAL_ROTATION_KEY）
+// 将原始后端 rotation 加载为前端 baseCameraEulerDeg（度）
+// 支持 3 元素欧拉角和 4 元素四元数（优先 props，其次 localStorage 原始映射）
 function loadOriginalBaseForScene(key: string | null) {
   try {
-    // 优先使用 props 中当前的 cameraRotation（可能是 quaternion）
-    const propsRotation = props.sceneData?.cameraRotation;
-    if (propsRotation && Array.isArray(propsRotation) && propsRotation.length >= 3) {
-      let x_raw: number, y_raw: number, z_raw: number;
-      if (propsRotation.length === 4) {
-        // Quaternion → euler degrees
-        const q = new THREE.Quaternion(propsRotation[0], propsRotation[1], propsRotation[2], propsRotation[3]);
-        const eulerRad = new THREE.Euler().setFromQuaternion(q, 'XYZ');
-        const toDeg = 180 / Math.PI;
-        x_raw = eulerRad.x * toDeg;
-        y_raw = eulerRad.y * toDeg;
-        z_raw = eulerRad.z * toDeg;
-      } else {
-        x_raw = propsRotation[0];
-        y_raw = propsRotation[1];
-        z_raw = propsRotation[2];
-      }
-      const x_from_backend = -x_raw;
-      const y_from_backend = -y_raw;
-      const z_from_backend = 90 - z_raw;
-      baseCameraEulerDeg.value = [x_from_backend, y_from_backend, z_from_backend];
-      try { cameraPrecision.value = Math.max(getDecimalPlaces(x_from_backend), getDecimalPlaces(y_from_backend), getDecimalPlaces(z_from_backend)); } catch (e) {}
+    const rotation = getRotationForScene(key);
+    const baseEuler = getBaseEulerDegForRotation(rotation);
+    if (baseEuler) {
+      baseCameraEulerDeg.value = baseEuler;
+      try {
+        cameraPrecision.value = Math.max(
+          getDecimalPlaces(baseEuler[0]),
+          getDecimalPlaces(baseEuler[1]),
+          getDecimalPlaces(baseEuler[2]),
+        );
+      } catch (e) {}
     } else {
-      // Fallback: try ORIGINAL_ROTATION_KEY
-      const arr = getOriginalRotationForScene(key);
-      if (arr && Array.isArray(arr) && arr.length === 3) {
-        const x_from_backend = -arr[0];
-        const y_from_backend = -arr[1];
-        const z_from_backend = 90 - arr[2];
-        baseCameraEulerDeg.value = [x_from_backend, y_from_backend, z_from_backend];
-        try { cameraPrecision.value = Math.max(getDecimalPlaces(x_from_backend), getDecimalPlaces(y_from_backend), getDecimalPlaces(z_from_backend)); } catch (e) {}
-      } else {
-        try { updateCameraPrecisionFromProps(); } catch (e) {}
-      }
+      try { updateCameraPrecisionFromProps(); } catch (e) {}
     }
   } catch (e) {}
 }
@@ -948,6 +1010,18 @@ watch(() => props.sceneData, (newVal, oldVal) => {
   loadCameraDeltaForScene(newKey);
   // 加载并设置原始后端角度作为 base
   try { loadOriginalBaseForScene(newKey); } catch (e) {}
+
+  // 场景切换后立即按“当前场景原始 rotation + 当前场景独立 delta”重算显示姿态，
+  // 避免在下一次渲染或用户拖动滑条前，暂时沿用上一个场景的 modelGroup.quaternion。
+  try {
+    const rotation = getRotationForScene(newKey);
+    if (rotation && modelGroup) {
+      applyCameraRotationFromArray(rotation);
+      if (pitchValue.value !== 0 || rollValue.value !== 0 || yawValue.value !== 0) {
+        applySlidersToCamera();
+      }
+    }
+  } catch (e) {}
 }, { immediate: true });
 
 // 监听共享全局 AD_arc 的变化，以便在多个场景中同步应用
@@ -1116,10 +1190,7 @@ function saveStateToLocalStorage() {
       undoStack: undoStack.value,
       redoStack: redoStack.value
     };
-    // 保存模型组四元数（替代旧的相机四元数）
-    if (typeof modelGroup !== 'undefined' && modelGroup) {
-      state.modelGroupQuaternion = { x: modelGroup.quaternion.x, y: modelGroup.quaternion.y, z: modelGroup.quaternion.z, w: modelGroup.quaternion.w };
-    }
+    // 不再持久化全局 modelGroupQuaternion，避免不同场景之间串用姿态基准
     // 合并已存在的 persisted scenes（仅保留 metadata，不把 shared 点写入到单独场景中）
     try {
       const existingRaw = localStorage.getItem(STORAGE_KEY);
@@ -2224,6 +2295,10 @@ onMounted(() => {
 
   // Load persisted state (if any) before initializing scene so watcher can pick up points
   const persisted = loadStateFromLocalStorage();
+  // 清理旧版本残留的全局 modelGroupQuaternion，避免把某个场景姿态串到其它场景
+  try { clearStaleModelGroupQuaternion(); } catch (e) {}
+  // 清理原始旋转缓存中不合法的历史数据，保持 scene -> rotation 映射语义稳定
+  try { clearLegacyRotationCache(); } catch (e) {}
 
 
   scene = new THREE.Scene();
@@ -2772,9 +2847,9 @@ watch(
         lastAppliedCameraRotation[2] === newRotation[2] &&
         (newRotation.length < 4 || lastAppliedCameraRotation[3] === newRotation[3])
       );
-      if (needApply) {
+      if (needApply || pitchValue.value !== 0 || rollValue.value !== 0 || yawValue.value !== 0) {
         applyCameraRotationFromArray(newRotation);
-        // 基准旋转已应用，如果有滑条增量则叠加
+        // 每次切场景都根据当前场景自己的 delta 重新叠加，避免多个场景共用同一显示姿态
         if (pitchValue.value !== 0 || rollValue.value !== 0 || yawValue.value !== 0) {
           applySlidersToCamera();
         }
