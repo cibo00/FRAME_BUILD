@@ -15,23 +15,23 @@ export default defineConfig({
   server: {
     proxy: {
       '/static': {
-        target: 'http://localhost:8080',
+        target: 'http://localhost:12000',
         changeOrigin: true,
       },
       '/api': {
-        target: 'http://localhost:8080',
+        target: 'http://localhost:12000',
         changeOrigin: true,
       },
       '/Login': {
-        target: 'http://localhost:8080',
+        target: 'http://localhost:12000',
         changeOrigin: true,
       },
       '/Register': {
-        target: 'http://localhost:8080',
+        target: 'http://localhost:12000',
         changeOrigin: true,
       },
       '/next-image': {
-        target: 'http://localhost:8080',
+        target: 'http://localhost:12000',
         changeOrigin: true,
       },
     }

@@ -67,15 +67,22 @@ function handleRootPointUpdate(pointName: string, newPosition: THREE.Vector3) {
     point.y = newPosition.y
     point.z = newPosition.z
 
-    // 同步到共享状态
-    const sharedPoint = sharedPointsState.sideProfilePoints.find(p => p.name === pointName)
-    if (sharedPoint) {
-      sharedPoint.x = newPosition.x
-      sharedPoint.y = newPosition.y
-      sharedPoint.z = newPosition.z
+    if (pointName === 'A') {
+      const sharedPositionPoint = sharedPointsState.positions.find(p => p.name === pointName)
+      if (sharedPositionPoint) {
+        sharedPositionPoint.x = newPosition.x
+        sharedPositionPoint.y = newPosition.y
+        sharedPositionPoint.z = newPosition.z
+      }
+    } else {
+      const sharedPoint = sharedPointsState.sideProfilePoints.find(p => p.name === pointName)
+      if (sharedPoint) {
+        sharedPoint.x = newPosition.x
+        sharedPoint.y = newPosition.y
+        sharedPoint.z = newPosition.z
+      }
     }
 
-    // 重新生成3D模型
     regenerateNailModel()
   }
 }
@@ -87,15 +94,35 @@ function handleTipPointUpdate(pointName: string, newPosition: THREE.Vector3) {
     point.y = newPosition.y
     point.z = newPosition.z
 
-    // 同步到共享状态
-    const sharedPoint = sharedPointsState.sideProfilePoints.find(p => p.name === pointName)
-    if (sharedPoint) {
-      sharedPoint.x = newPosition.x
-      sharedPoint.y = newPosition.y
-      sharedPoint.z = newPosition.z
+    if (pointName === 'D') {
+      const leftControl = tipSidePoints.value.find(p => p.name === 'D_P1_J')
+      const rightControl = tipSidePoints.value.find(p => p.name === 'D_P1_I')
+      if (leftControl && rightControl) {
+        const midpoint = new THREE.Vector3(
+          (leftControl.x + rightControl.x) / 2,
+          (leftControl.y + rightControl.y) / 2,
+          (leftControl.z + rightControl.z) / 2,
+        )
+        point.x = midpoint.x
+        point.y = midpoint.y
+        point.z = midpoint.z
+        newPosition = midpoint
+      }
+      const sharedPositionPoint = sharedPointsState.positions.find(p => p.name === pointName)
+      if (sharedPositionPoint) {
+        sharedPositionPoint.x = newPosition.x
+        sharedPositionPoint.y = newPosition.y
+        sharedPositionPoint.z = newPosition.z
+      }
+    } else {
+      const sharedPoint = sharedPointsState.sideProfilePoints.find(p => p.name === pointName)
+      if (sharedPoint) {
+        sharedPoint.x = newPosition.x
+        sharedPoint.y = newPosition.y
+        sharedPoint.z = newPosition.z
+      }
     }
 
-    // 重新生成3D模型
     regenerateNailModel()
   }
 }
@@ -186,14 +213,21 @@ const tipSidePoints = vueRef<ScenePoint[]>([
   { name: 'D',     x:  0.0, y:  0.0, z: 0 }  // 中心基座点
 ])
 
-// 从 sharedPointsState 的 bezierPoints 中同步 G/H/I/J 等侧轮廓点到 rootSidePoints/tipSidePoints
-function syncSidePointsFromBezierPoints() {
-  const bp = sharedPointsState.bezierPoints;
-  if (!bp || bp.length === 0) return;
+// 从 sharedPointsState 的 sideProfilePoints / positions 中同步 G/H/I/J 等侧轮廓点到 rootSidePoints/tipSidePoints
+function syncSideProfilePointsFromStore() {
+  const sideProfilePoints = sharedPointsState.sideProfilePoints || [];
+  const positions = sharedPointsState.positions || [];
+  const bezierPoints = sharedPointsState.bezierPoints || [];
+
+  const findSidePoint = (name: string) => sideProfilePoints.find((p: any) => p.name === name);
+  const findPositionPoint = (name: string) => positions.find((p: any) => p.name === name);
+  const findBezierPoint = (name: string) => bezierPoints.find((p: any) => p.name === name);
 
   // 更新 rootSidePoints (G, A_P1_G, A, A_P1_H, H)
   for (const sp of rootSidePoints.value) {
-    const found = bp.find((p: any) => p.name === sp.name);
+    const found = sp.name === 'A'
+      ? findPositionPoint('A')
+      : findSidePoint(sp.name) ?? findBezierPoint(sp.name);
     if (found) {
       sp.x = found.x;
       sp.y = found.y;
@@ -201,9 +235,22 @@ function syncSidePointsFromBezierPoints() {
     }
   }
 
+  const dPointFromModel = findPositionPoint('D') ?? findBezierPoint('D');
+  const dLeftControl = findSidePoint('D_P1_J') ?? findBezierPoint('D_P1_J');
+  const dRightControl = findSidePoint('D_P1_I') ?? findBezierPoint('D_P1_I');
+  const derivedTipD = dLeftControl && dRightControl
+    ? {
+        x: (dLeftControl.x + dRightControl.x) / 2,
+        y: (dLeftControl.y + dRightControl.y) / 2,
+        z: (dLeftControl.z + dRightControl.z) / 2,
+      }
+    : null;
+
   // 更新 tipSidePoints (J, D_P1_J, D, D_P1_I, I)
   for (const sp of tipSidePoints.value) {
-    const found = bp.find((p: any) => p.name === sp.name);
+    const found = sp.name === 'D'
+      ? derivedTipD ?? dPointFromModel
+      : findSidePoint(sp.name) ?? findBezierPoint(sp.name);
     if (found) {
       sp.x = found.x;
       sp.y = found.y;
@@ -211,11 +258,17 @@ function syncSidePointsFromBezierPoints() {
     }
   }
 }
-syncSidePointsFromBezierPoints();
+syncSideProfilePointsFromStore();
 
-// 监听 bezierPoints 变化，自动同步侧轮廓点
+// 监听 sideProfilePoints / positions / bezierPoints 变化，自动同步侧轮廓点
+watch(() => sharedPointsState.sideProfilePoints, () => {
+  syncSideProfilePointsFromStore();
+}, { deep: true });
+watch(() => sharedPointsState.positions, () => {
+  syncSideProfilePointsFromStore();
+}, { deep: true });
 watch(() => sharedPointsState.bezierPoints, () => {
-  syncSidePointsFromBezierPoints();
+  syncSideProfilePointsFromStore();
 }, { deep: true });
 
 // 新增：参数控制
@@ -356,7 +409,27 @@ let bgLocalOffset: THREE.Vector3 | null = null;
 let bgLocalQuat: THREE.Quaternion | null = null;
 let currentDragged: THREE.Object3D | null = null;
 
-// 滑条增量在世界坐标系下应用，避免基准旋转导致轴重合
+// 滑条增量绕模型自身局部坐标轴应用，保持 pitch/yaw/roll 定义一致
+function composeQuaternionFromBaseAndDeltas(
+  baseQuaternion: THREE.Quaternion,
+  pitchDeg: number,
+  yawDeg: number,
+  rollDeg: number,
+): THREE.Quaternion {
+  const pitchLocalQ = new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(1, 0, 0), THREE.MathUtils.degToRad(pitchDeg)
+  );
+  const yawLocalQ = new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(yawDeg)
+  );
+  const rollLocalQ = new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(0, 0, 1), THREE.MathUtils.degToRad(rollDeg)
+  );
+
+  const localDelta = pitchLocalQ.clone().multiply(yawLocalQ).multiply(rollLocalQ);
+  return baseQuaternion.clone().multiply(localDelta);
+}
+
 function applySlidersToCamera() {
   if (!modelGroup) return;
 
@@ -367,26 +440,15 @@ function applySlidersToCamera() {
     'XYZ'
   );
   const baseQuaternion = new THREE.Quaternion().setFromEuler(baseEuler);
-
-  // 分别绕世界坐标轴构建增量，保证 Pitch/Yaw/Roll 始终独立
-  const pitchQ = new THREE.Quaternion().setFromAxisAngle(
-    new THREE.Vector3(1, 0, 0), THREE.MathUtils.degToRad(pitchValue.value)
-  );
-  const yawQ = new THREE.Quaternion().setFromAxisAngle(
-    new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(yawValue.value)
-  );
-  const rollQ = new THREE.Quaternion().setFromAxisAngle(
-    new THREE.Vector3(0, 0, 1), THREE.MathUtils.degToRad(rollValue.value)
+  const targetQuaternion = composeQuaternionFromBaseAndDeltas(
+    baseQuaternion,
+    pitchValue.value,
+    yawValue.value,
+    rollValue.value,
   );
 
-  // 世界坐标系下叠加：delta * base，而非 base * delta
-  const deltaQuaternion = rollQ.multiply(yawQ).multiply(pitchQ);
-
-  // 世界坐标系叠加：先 delta 再 base
-  const targetQuaternion = deltaQuaternion.clone().multiply(baseQuaternion);
   modelGroup.quaternion.copy(targetQuaternion);
 
-  // 仅保存到 localStorage，不写入 props 避免触发深层 watcher
   try { saveCameraDeltaForScene(currentSceneKey.value); } catch (e) {}
 }
 
@@ -2167,6 +2229,18 @@ onMounted(() => {
   scene = new THREE.Scene();
   modelGroup = new THREE.Group();
   scene.add(modelGroup);
+  const axesHelper = new THREE.AxesHelper(100);
+  modelGroup.add(axesHelper);
+  const axisLabelConfigs = [
+    { text: 'X', position: new THREE.Vector3(110, 0, 0), color: { r: 255, g: 80, b: 80, a: 1.0 } },
+    { text: 'Y', position: new THREE.Vector3(0, 110, 0), color: { r: 80, g: 255, b: 80, a: 1.0 } },
+    { text: 'Z', position: new THREE.Vector3(0, 0, 110), color: { r: 80, g: 160, b: 255, a: 1.0 } },
+  ];
+  axisLabelConfigs.forEach(({ text, position, color }) => {
+    const label = makeTextSprite(text, { fontsize: 48, fontface: 'Arial', textColor: color });
+    label.position.copy(position);
+    modelGroup.add(label);
+  });
   camera = new THREE.PerspectiveCamera(75, 1, 0.1, 1000);
   camera.position.set(0, 0, 300);
   camera.up.set(0, 1, 0);

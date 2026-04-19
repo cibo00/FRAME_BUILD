@@ -569,8 +569,9 @@ function transformOutputData(outputData: OutputData, imageWithMeta: ImageWithMet
     const processedBezierPoints: { name: string, x: number, y: number, z: number }[] = [];
 
     const positionNames = ["A", "B", "C", "D", "E", "F"];
+    const sideProfilePointNames = ["G", "H", "I", "J", "A_P1_G", "A_P1_H", "D_P1_I", "D_P1_J"];
     // 定义一个要从 bezierPoints 中排除的点名列表
-    const pointsToExclude = ["A_P_AF", "B_P_AB", "D_P_CD", "F_P_AF"];
+    const pointsToExclude = ["A_P_AF", "B_P_AB", "D_P_CD", "F_P_AF", ...sideProfilePointNames];
 
     for (const name in allPoints) {
         if (positionNames.includes(name)) {
@@ -602,7 +603,45 @@ function transformOutputData(outputData: OutputData, imageWithMeta: ImageWithMet
     };
 }
 
+function extractSideProfilePoints(outputData: OutputData): ScenePoint[] {
+  const sideProfilePointNames = ['G', 'H', 'I', 'J', 'A_P1_G', 'A_P1_H', 'D_P1_I', 'D_P1_J'];
+  return sideProfilePointNames
+    .map((name) => {
+      const point = outputData[name];
+      if (Array.isArray(point) && point.length >= 2) {
+        return {
+          name,
+          x: Number(point[0]),
+          y: Number(point[1]),
+          z: point.length >= 3 ? Number(point[2]) : 0,
+        };
+      }
+      return null;
+    })
+    .filter((point): point is ScenePoint => point !== null);
+}
+
 // 计算每个场景的修正四元数（原始四元数 + 滑条增量）
+function composeQuaternionFromBaseAndDeltas(
+  baseQuaternion: THREE.Quaternion,
+  pitchDeg: number,
+  yawDeg: number,
+  rollDeg: number,
+): THREE.Quaternion {
+  const pitchLocalQ = new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(1, 0, 0), THREE.MathUtils.degToRad(pitchDeg)
+  );
+  const yawLocalQ = new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(yawDeg)
+  );
+  const rollLocalQ = new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(0, 0, 1), THREE.MathUtils.degToRad(rollDeg)
+  );
+
+  const localDelta = pitchLocalQ.clone().multiply(yawLocalQ).multiply(rollLocalQ);
+  return baseQuaternion.clone().multiply(localDelta);
+}
+
 function getCorrectedQuaternion(scene: any): number[] {
   const tabScope = getTabScopedId();
   const deltaMapKey = `frame_build_three_scene_state_v1_${tabScope}_camera_delta_map`;
@@ -632,27 +671,12 @@ function getCorrectedQuaternion(scene: any): number[] {
   // 无增量时直接返回原始四元数
   if (pitchDelta === 0 && yawDelta === 0 && rollDelta === 0) return rot;
 
-  // 与 ThreeScene 中 applySlidersToCamera 一致：先转欧拉角作为 base，再用增量叠加
-  const baseEulerDeg = [0, 0, 0];
-  const eulerRad = new THREE.Euler().setFromQuaternion(qBase, 'XYZ');
-  const toDeg = 180 / Math.PI;
-  baseEulerDeg[0] = eulerRad.x * toDeg;
-  baseEulerDeg[1] = eulerRad.y * toDeg;
-  baseEulerDeg[2] = eulerRad.z * toDeg;
-
-  const baseQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-    THREE.MathUtils.degToRad(baseEulerDeg[0]),
-    THREE.MathUtils.degToRad(baseEulerDeg[1]),
-    THREE.MathUtils.degToRad(baseEulerDeg[2]),
-    'XYZ'
-  ));
-  const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-    THREE.MathUtils.degToRad(pitchDelta),
-    THREE.MathUtils.degToRad(yawDelta),
-    THREE.MathUtils.degToRad(rollDelta),
-    'YXZ'
-  ));
-  const corrected = baseQ.clone().multiply(deltaQ);
+  const corrected = composeQuaternionFromBaseAndDeltas(
+    qBase,
+    pitchDelta,
+    yawDelta,
+    rollDelta,
+  );
   return [corrected.x, corrected.y, corrected.z, corrected.w];
 }
 
@@ -817,6 +841,9 @@ async function fetchNextDataBatch(force = false) {
             sharedPointsState.positions = initialPositions.map(p => ({ ...p }));
             sharedPointsState.bezierPoints = initialBezierPoints.map(p => ({ ...p }));
         }
+        sharedPointsState.sideProfilePoints = apiData.outputData
+          ? extractSideProfilePoints(apiData.outputData).map(p => ({ ...p }))
+          : [];
 
         // 始终从后端 outputData 更新可选参数（不受 localStorage 缓存影响）
         if (apiData.outputData) {
@@ -866,6 +893,7 @@ async function fetchNextDataBatch(force = false) {
         const persistState: any = {
           positions: sharedPointsState.positions,
           bezierPoints: sharedPointsState.bezierPoints,
+          sideProfilePoints: sharedPointsState.sideProfilePoints,
           scenes: newScenes
         };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(persistState));
@@ -883,6 +911,7 @@ async function fetchNextDataBatch(force = false) {
           const persistState: any = {
             positions: sharedPointsState.positions,
             bezierPoints: sharedPointsState.bezierPoints,
+            sideProfilePoints: sharedPointsState.sideProfilePoints,
             scenes: newScenes,
             xyRotation: sharedPointsState.xyRotation,
             aTangent: sharedPointsState.aTangent,
@@ -918,6 +947,7 @@ async function fetchNextDataBatch(force = false) {
             if (Array.isArray(persisted.positions) && persisted.positions.length > 0) {
               sharedPointsState.positions = persisted.positions.map((p: any) => ({ name: p.name, x: Number(p.x), y: Number(p.y), z: Number(p.z) }));
               sharedPointsState.bezierPoints = Array.isArray(persisted.bezierPoints) ? persisted.bezierPoints.map((p: any) => ({ name: p.name, x: Number(p.x), y: Number(p.y), z: Number(p.z) })) : [];
+              sharedPointsState.sideProfilePoints = Array.isArray(persisted.sideProfilePoints) ? persisted.sideProfilePoints.map((p: any) => ({ name: p.name, x: Number(p.x), y: Number(p.y), z: Number(p.z) })) : [];
             }
             // 恢复 xyRotation 和 aTangent
             if (typeof persisted.xyRotation === 'number') {
@@ -936,6 +966,7 @@ async function fetchNextDataBatch(force = false) {
           if (Array.isArray(persisted.positions) && persisted.positions.length > 0) {
             sharedPointsState.positions = persisted.positions.map((p: any) => ({ name: p.name, x: Number(p.x), y: Number(p.y), z: Number(p.z) }));
             sharedPointsState.bezierPoints = Array.isArray(persisted.bezierPoints) ? persisted.bezierPoints.map((p: any) => ({ name: p.name, x: Number(p.x), y: Number(p.y), z: Number(p.z) })) : [];
+            sharedPointsState.sideProfilePoints = Array.isArray(persisted.sideProfilePoints) ? persisted.sideProfilePoints.map((p: any) => ({ name: p.name, x: Number(p.x), y: Number(p.y), z: Number(p.z) })) : [];
             // 恢复 xyRotation 和 aTangent
             if (typeof persisted.xyRotation === 'number') {
               sharedPointsState.xyRotation = persisted.xyRotation;
@@ -1021,6 +1052,9 @@ async function loadDataByGroupId(groupId: string) {
 
     sharedPointsState.positions = initialPositions.map(p => ({ ...p }));
     sharedPointsState.bezierPoints = initialBezierPoints.map(p => ({ ...p }));
+    sharedPointsState.sideProfilePoints = apiData.outputData
+      ? extractSideProfilePoints(apiData.outputData).map(p => ({ ...p }))
+      : [];
 
     // 更新 xyRotation、aTangent 等全局参数
     if (apiData.outputData) {
@@ -1099,6 +1133,7 @@ onMounted(() => {
           if (hasPositions) {
             sharedPointsState.positions = persisted.positions.map((p: any) => ({ name: p.name, x: Number(p.x), y: Number(p.y), z: Number(p.z) }));
             sharedPointsState.bezierPoints = Array.isArray(persisted.bezierPoints) ? persisted.bezierPoints.map((p: any) => ({ name: p.name, x: Number(p.x), y: Number(p.y), z: Number(p.z) })) : [];
+            sharedPointsState.sideProfilePoints = Array.isArray(persisted.sideProfilePoints) ? persisted.sideProfilePoints.map((p: any) => ({ name: p.name, x: Number(p.x), y: Number(p.y), z: Number(p.z) })) : [];
           }
           // 恢复 xyRotation 和 aTangent 参数（避免刷新后重置为默认值）
           if (typeof persisted.xyRotation === 'number') {

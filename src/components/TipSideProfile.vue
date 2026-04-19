@@ -37,6 +37,7 @@ let dragControls: DragControls | null = null
 
 const draggableObjects: THREE.Mesh[] = []
 const pointLabels: THREE.Sprite[] = []
+const pointMeshes: THREE.Mesh[] = []
 let tipProfileCurve: THREE.Line | null = null
 let baseLine: THREE.Line | null = null
 
@@ -81,14 +82,22 @@ function updateTipProfile() {
 
   const sceneRef = scene
 
+  pointMeshes.forEach(obj => sceneRef.remove(obj))
   draggableObjects.forEach(obj => sceneRef.remove(obj))
   pointLabels.forEach(label => sceneRef.remove(label))
   if (tipProfileCurve) {
     sceneRef.remove(tipProfileCurve)
+    if (tipProfileCurve.geometry) tipProfileCurve.geometry.dispose()
+    if (tipProfileCurve.material instanceof THREE.Material) tipProfileCurve.material.dispose()
+    tipProfileCurve = null
   }
   if (baseLine) {
     sceneRef.remove(baseLine)
+    if (baseLine.geometry) baseLine.geometry.dispose()
+    if (baseLine.material instanceof THREE.Material) baseLine.material.dispose()
+    baseLine = null
   }
+  pointMeshes.length = 0
   draggableObjects.length = 0
   pointLabels.length = 0
 
@@ -119,6 +128,7 @@ function updateTipProfile() {
     sphere.userData.labelOffsetY = off.dy
 
     sceneRef.add(sphere)
+    pointMeshes.push(sphere)
     
     if (pointName !== 'A' && pointName !== 'D') {
       // A 点和 D 点不参与拖拽，保持固定
