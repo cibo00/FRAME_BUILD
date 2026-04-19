@@ -30,8 +30,7 @@ const errorMessage = ref('');
 // 为了代码清晰和类型安全，我们定义与Go后端匹配的TypeScript接口
 interface Metadata {
   image_filename: string;
-  instance_rotation_euler_degrees: number[];
-  quaternion?: number[];
+  quaternion: number[];
 }
 
 interface ImageWithMetadata {
@@ -583,15 +582,12 @@ function transformOutputData(outputData: OutputData, imageWithMeta: ImageWithMet
         }
     }
 
-    // 4. 计算相机旋转：优先使用四元数（直接传递），回退到欧拉角
-    let cameraRotation: number[];
+    // 4. 读取模型旋转四元数 [x, y, z, w]
     const meta = imageWithMeta.metadata;
-    if (meta.quaternion && meta.quaternion.length === 4) {
-        // 直接传递四元数，由 ThreeScene 内部转换并应用变换
-        cameraRotation = meta.quaternion;
-    } else {
-        cameraRotation = meta.instance_rotation_euler_degrees;
+    if (!Array.isArray(meta.quaternion) || meta.quaternion.length !== 4) {
+        throw new Error(`图片 ${meta.image_filename || imageWithMeta.imageUrl} 缺少有效 quaternion 数据`);
     }
+    const cameraRotation = meta.quaternion.map((value) => Number(value) || 0);
 
     // 5. 返回最终的、可以直接给ThreeScene使用的数据对象
     return {
@@ -647,16 +643,17 @@ function getCorrectedQuaternion(scene: any): number[] {
   const deltaMapKey = `frame_build_three_scene_state_v1_${tabScope}_camera_delta_map`;
   const rot = scene.cameraRotation;
 
-  // 非4元素时直接返回原始值
-  if (!rot || rot.length !== 4) return rot;
+  if (!rot || rot.length !== 4) {
+    throw new Error(`场景 ${scene.backgroundImage || 'unknown'} 缺少有效 quaternion（字段名 cameraRotation）`);
+  }
 
-  // 后端四元数协议为 [w, x, y, z]；前端滑条叠加基于固定相机下的模型姿态，因此先重排并取逆
+  // 后端四元数协议为 [x, y, z, w]，直接使用
   const qBase = new THREE.Quaternion(
+    Number(rot[0]) || 0,
     Number(rot[1]) || 0,
     Number(rot[2]) || 0,
-    Number(rot[3]) || 0,
-    Number(rot[0]) || 1,
-  ).normalize().invert();
+    Number(rot[3]) || 1,
+  ).normalize();
 
   // 读取该场景的滑条增量
   const sceneKey = scene.backgroundImage || 'default_scene';
@@ -684,13 +681,12 @@ function getCorrectedQuaternion(scene: any): number[] {
     rollDelta,
   );
 
-  // 导出时恢复成后端协议：camera quaternion、顺序为 [w, x, y, z]
-  const correctedCameraQuaternion = correctedModelQuaternion.clone().invert();
+  // 导出时保持后端顺序 [x, y, z, w]
   return [
-    correctedCameraQuaternion.w,
-    correctedCameraQuaternion.x,
-    correctedCameraQuaternion.y,
-    correctedCameraQuaternion.z,
+    correctedModelQuaternion.x,
+    correctedModelQuaternion.y,
+    correctedModelQuaternion.z,
+    correctedModelQuaternion.w,
   ];
 }
 
@@ -990,7 +986,7 @@ async function fetchNextDataBatch(force = false) {
             }
             const sceneObj: any = {
               backgroundImage: persisted.backgroundImage || '',
-              cameraRotation: persisted.cameraRotation || [0,0,0],
+              cameraRotation: Array.isArray(persisted.cameraRotation) && persisted.cameraRotation.length === 4 ? persisted.cameraRotation : [1,0,0,0],
               backgroundPlanePosition: persisted.backgroundPlanePosition || null
             };
             scenesData.value = [sceneObj];
@@ -1162,7 +1158,7 @@ onMounted(() => {
             // 构造一个场景数据用于 SidePanel 和 ThreeScene（兼容旧格式）
             const sceneObj: any = {
               backgroundImage: persisted.backgroundImage || '',
-              cameraRotation: persisted.cameraRotation || [0,0,0],
+              cameraRotation: Array.isArray(persisted.cameraRotation) && persisted.cameraRotation.length === 4 ? persisted.cameraRotation : [1,0,0,0],
               backgroundPlanePosition: persisted.backgroundPlanePosition || null
             };
             scenesData.value = [sceneObj];

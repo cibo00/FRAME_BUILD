@@ -28,7 +28,7 @@ const isSceneReady = vueRef(false);
 const props = defineProps<{
    sceneData: {
     backgroundImage: string,  // 图片 URL
-    cameraRotation: number[],  // 相机旋转角度 (欧拉角)
+    cameraRotation: number[],  // 模型旋转四元数 [x, y, z, w]
     backgroundPlanePosition: { x: number, y: number, z: number } | null,
     imageScale?: number,  // 图片缩放比例
     AD_arc?: number
@@ -132,9 +132,8 @@ function regenerateNailModel() {
 }
 
 function resetCameraToProps() {
-  // 直接使用 props 中的原始 cameraRotation（可能是 3 元素 euler 或 4 元素 quaternion）
   const rotation = props.sceneData?.cameraRotation;
-  if (rotation && (rotation.length === 3 || rotation.length === 4)) {
+  if (rotation && rotation.length === 4) {
     applyCameraRotationFromArray(rotation);
     try {
       saveStateToLocalStorage();
@@ -313,7 +312,7 @@ const yawValue = vueRef(0);
 
 // 基准球坐标（用于根据相机朝向计算位置）
 let baseSpherical: THREE.Spherical | null = null
-// 存储后端提供的基准欧拉角（度），滑条作为对此的增量
+// 存储由当前场景 quaternion 推导出的基准欧拉角（度），仅用于滑条显示与精度控制
 const baseCameraEulerDeg = vueRef<[number, number, number]>([0, 0, 0]);
 
 // 记录上次由后端/props 应用到相机的 cameraRotation（用于避免 props 中 cameraDelta 导致的回写覆盖）
@@ -345,21 +344,13 @@ const adArcStep = computed(() => Math.pow(10, -Math.max(0, adArcPrecision.value)
 function updateCameraPrecisionFromProps() {
   try {
     const cr = props.sceneData?.cameraRotation;
-    if (cr && Array.isArray(cr) && (cr.length === 3 || cr.length === 4)) {
-      let x: number, y: number, z: number;
-      if (cr.length === 4) {
-        // 与实际显示链路保持一致：后端四元数先按协议重排/取逆，再转 Euler 用于精度显示
-        const q = buildFrontendQuaternionFromRotation(cr).quaternion;
-        const euler = new THREE.Euler().setFromQuaternion(q, 'XYZ');
-        const toDeg = 180 / Math.PI;
-        x = euler.x * toDeg;
-        y = euler.y * toDeg;
-        z = euler.z * toDeg;
-      } else {
-        x = cr[0];
-        y = cr[1];
-        z = cr[2];
-      }
+    if (cr && Array.isArray(cr) && cr.length === 4) {
+      const q = buildFrontendQuaternionFromRotation(cr).quaternion;
+      const euler = new THREE.Euler().setFromQuaternion(q, 'XYZ');
+      const toDeg = 180 / Math.PI;
+      const x = euler.x * toDeg;
+      const y = euler.y * toDeg;
+      const z = euler.z * toDeg;
       const p = Math.max(getDecimalPlaces(x), getDecimalPlaces(y), getDecimalPlaces(z));
       cameraPrecision.value = p;
       return;
@@ -430,53 +421,86 @@ function composeQuaternionFromBaseAndDeltas(
   return baseQuaternion.clone().multiply(localDelta);
 }
 
-function convertBackendEulerToFrontendEulerDeg(rotation: number[]): [number, number, number] {
-  const x_from_backend = Number(rotation[0]) || 0;
-  const y_from_backend = Number(rotation[1]) || 0;
-  const z_from_backend = Number(rotation[2]) || 0;
-
-  return [
-    -x_from_backend,
-    -y_from_backend,
-    90 - z_from_backend,
-  ];
-}
-
 function quaternionToEulerDeg(quaternion: THREE.Quaternion): [number, number, number] {
   const euler = new THREE.Euler().setFromQuaternion(quaternion, 'XYZ');
   const toDeg = 180 / Math.PI;
   return [euler.x * toDeg, euler.y * toDeg, euler.z * toDeg];
 }
 
+// ========== 临时测试：四元数排列组合 ==========
+const a = 0.3219897150993347;
+const b = 0.0009193891892209649;
+const c = 0.5552143454551697;
+const d = 0.766849935054779;
+const baseVals = [a, b, c, d];
+const valLabels = ['a', 'b', 'c', 'd'];
+
+function generateQuaternionCombos(): { values: number[], label: string }[] {
+  const result: { values: number[], label: string }[] = [];
+  const perms = [
+    [0,1,2,3],[0,1,3,2],[0,2,1,3],[0,2,3,1],[0,3,1,2],[0,3,2,1],
+    [1,0,2,3],[1,0,3,2],[1,2,0,3],[1,2,3,0],[1,3,0,2],[1,3,2,0],
+    [2,0,1,3],[2,0,3,1],[2,1,0,3],[2,1,3,0],[2,3,0,1],[2,3,1,0],
+    [3,0,1,2],[3,0,2,1],[3,1,0,2],[3,1,2,0],[3,2,0,1],[3,2,1,0],
+  ];
+  for (const perm of perms) {
+    for (let mask = 0; mask < 16; mask++) {
+      const signs = [
+        (mask & 1) ? -1 : 1,
+        (mask & 2) ? -1 : 1,
+        (mask & 4) ? -1 : 1,
+        (mask & 8) ? -1 : 1,
+      ];
+      const combo = signs.map((s, j) => s * baseVals[perm[j]]);
+      // 固定第 4 分量 >= 0 去重 (q 与 -q 等价)
+      if (combo[3] < 0) continue;
+      const signChars = signs.map(s => s > 0 ? '+' : '-');
+      const pLabels = perm.map(i => valLabels[i]);
+      const label = `(${signChars[0]}${pLabels[0]}, ${signChars[1]}${pLabels[1]}, ${signChars[2]}${pLabels[2]}, ${signChars[3]}${pLabels[3]})`;
+      result.push({ values: combo, label });
+    }
+  }
+  return result;
+}
+
+const testCombos = generateQuaternionCombos();
+const testEnabled = vueRef(false);
+const testIndex = vueRef(0);
+
+function testPrev() {
+  testIndex.value = (testIndex.value - 1 + testCombos.length) % testCombos.length;
+  applyTestQuaternion();
+}
+
+function testNext() {
+  testIndex.value = (testIndex.value + 1) % testCombos.length;
+  applyTestQuaternion();
+}
+
+function applyTestQuaternion() {
+  if (!modelGroup) return;
+  const combo = testCombos[testIndex.value];
+  const q = new THREE.Quaternion(combo.values[0], combo.values[1], combo.values[2], combo.values[3]).normalize();
+  modelGroup.quaternion.copy(q);
+}
+
+function exitTest() {
+  testEnabled.value = false;
+  resetCameraToProps();
+}
+
+// ========== 临时测试结束 ==========
+
 function buildFrontendQuaternionFromRotation(rotation: number[]): {
   quaternion: THREE.Quaternion,
   baseEulerDeg: [number, number, number],
 } {
-  let quaternion: THREE.Quaternion;
-
-  if (rotation.length === 4) {
-    // 后端四元数按 [w, x, y, z] 传入；three.js 需要 [x, y, z, w]
-    const qBackend = new THREE.Quaternion(
-      Number(rotation[1]) || 0,
-      Number(rotation[2]) || 0,
-      Number(rotation[3]) || 0,
-      Number(rotation[0]) || 1,
-    ).normalize();
-
-    // 后端字段虽然命名为 cameraRotation，但前端实际是把它作用到 modelGroup。
-    // 为了在固定相机下复现相机姿态效果，这里取逆转成模型姿态。
-    quaternion = qBackend.clone().invert();
-  } else {
-    const baseEulerDeg = convertBackendEulerToFrontendEulerDeg(rotation);
-    quaternion = new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(
-        THREE.MathUtils.degToRad(baseEulerDeg[0]),
-        THREE.MathUtils.degToRad(baseEulerDeg[1]),
-        THREE.MathUtils.degToRad(baseEulerDeg[2]),
-        'XYZ'
-      )
-    );
-  }
+  const quaternion = new THREE.Quaternion(
+    Number(rotation[0]) || 0,
+    Number(rotation[1]) || 0,
+    Number(rotation[2]) || 0,
+    Number(rotation[3]) || 1,
+  ).normalize();
 
   return {
     quaternion,
@@ -504,7 +528,7 @@ function setRotationMapEntry(key: string, rotation: number[]) {
 }
 
 function getBaseEulerDegForRotation(rotation: number[] | null | undefined): [number, number, number] | null {
-  if (!rotation || !Array.isArray(rotation) || rotation.length < 3) return null;
+  if (!rotation || !Array.isArray(rotation) || rotation.length !== 4) return null;
   try {
     return buildFrontendQuaternionFromRotation(rotation).baseEulerDeg;
   } catch (e) {
@@ -514,12 +538,12 @@ function getBaseEulerDegForRotation(rotation: number[] | null | undefined): [num
 
 function getRotationForScene(key: string | null): number[] | null {
   const propsRotation = props.sceneData?.cameraRotation;
-  if (propsRotation && Array.isArray(propsRotation) && (propsRotation.length === 3 || propsRotation.length === 4)) {
+  if (propsRotation && Array.isArray(propsRotation) && propsRotation.length === 4) {
     return propsRotation.slice();
   }
   if (!key) return null;
   const arr = getRotationMapFromStorage()[key];
-  if (Array.isArray(arr) && (arr.length === 3 || arr.length === 4)) {
+  if (Array.isArray(arr) && arr.length === 4) {
     return arr.slice();
   }
   return null;
@@ -543,7 +567,7 @@ function clearLegacyRotationCache() {
     let mutated = false;
     for (const key of Object.keys(map)) {
       const value = map[key];
-      if (!Array.isArray(value) || (value.length !== 3 && value.length !== 4)) {
+      if (!Array.isArray(value) || value.length !== 4) {
         delete map[key];
         mutated = true;
       }
@@ -558,14 +582,9 @@ function applySlidersToCamera() {
   if (!modelGroup) return;
 
   const rotation = getRotationForScene(currentSceneKey.value);
-  const baseQuaternion = rotation
-    ? buildFrontendQuaternionFromRotation(rotation).quaternion
-    : new THREE.Quaternion().setFromEuler(new THREE.Euler(
-        THREE.MathUtils.degToRad(baseCameraEulerDeg.value[0] || 0),
-        THREE.MathUtils.degToRad(baseCameraEulerDeg.value[1] || 0),
-        THREE.MathUtils.degToRad(baseCameraEulerDeg.value[2] || 0),
-        'XYZ'
-      ));
+  if (!rotation) return;
+
+  const baseQuaternion = buildFrontendQuaternionFromRotation(rotation).quaternion;
   const targetQuaternion = composeQuaternionFromBaseAndDeltas(
     baseQuaternion,
     pitchValue.value,
@@ -579,8 +598,7 @@ function applySlidersToCamera() {
   try { saveCameraDeltaForScene(currentSceneKey.value); } catch (e) {}
 }
 
-// 将后端/props 中的旋转数据应用到模型组
-// 支持 3 元素欧拉角 [x,y,z]（度）和 4 元素四元数 [x,y,z,w]
+// 将后端/props 中的四元数旋转数据应用到模型组
 function applyCameraRotationFromArray(newRotation: number[]) {
   if (!modelGroup) return;
   try {
@@ -962,8 +980,8 @@ function getOriginalRotationForScene(key: string | null): number[] | null {
   }
 }
 
-// 将原始后端 rotation 加载为前端 baseCameraEulerDeg（度）
-// 支持 3 元素欧拉角和 4 元素四元数（优先 props，其次 localStorage 原始映射）
+// 将原始后端 quaternion 加载为前端 baseCameraEulerDeg（度）
+// 优先 props，其次 localStorage 原始映射
 function loadOriginalBaseForScene(key: string | null) {
   try {
     const rotation = getRotationForScene(key);
@@ -2297,6 +2315,8 @@ onMounted(() => {
   const persisted = loadStateFromLocalStorage();
   // 清理旧版本残留的全局 modelGroupQuaternion，避免把某个场景姿态串到其它场景
   try { clearStaleModelGroupQuaternion(); } catch (e) {}
+  // 清理后同步清除已加载的 persisted 中的残留值，防止在 onMounted 后续被重新应用
+  if (persisted) { delete (persisted as any).modelGroupQuaternion; }
   // 清理原始旋转缓存中不合法的历史数据，保持 scene -> rotation 映射语义稳定
   try { clearLegacyRotationCache(); } catch (e) {}
 
@@ -2597,6 +2617,15 @@ onMounted(() => {
   }
   animate()
 
+  // watch(immediate) 在 setup 阶段触发时 modelGroup 为 null，四元数未应用；
+  // 此处在 onMounted 末尾补一次，确保 props 中的四元数生效
+  try {
+    const initRotation = getRotationForScene(getSceneKey());
+    if (initRotation && modelGroup) {
+      applyCameraRotationFromArray(initRotation);
+    }
+  } catch (e) {}
+
 isSceneReady.value = true;
 console.log('✅ ThreeScene 组件已挂载 (onMounted)。');
 })
@@ -2836,9 +2865,9 @@ watch(
       controls.update();
     }
   }
-    // --- 更新相机视角 (cameraRotation) ---
+    // --- 更新模型姿态 (cameraRotation 字段) ---
     const newRotation = newData.cameraRotation;
-    if (modelGroup && newRotation && (newRotation.length === 3 || newRotation.length === 4)) {
+    if (modelGroup && newRotation && newRotation.length === 4) {
       // 仅当后端的 cameraRotation 与上次应用的不同时才应用
       const needApply = !lastAppliedCameraRotation || !(
         lastAppliedCameraRotation.length === newRotation.length &&
@@ -3122,6 +3151,27 @@ watch(
       </div>
       <div class="curve-buttons" style="margin-top:10px; display:flex; flex-wrap:wrap; gap:4px;">
         <button v-for="curveName in curveNames" :key="curveName" @click="selectCurveByName(curveName)" class="curve-button">{{ curveName }}</button>
+      </div>
+
+      <!-- 临时测试：四元数排列组合 -->
+      <div style="margin-top:12px; padding:8px; border:2px solid #e74c3c; border-radius:6px; background:#fff8f8;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <button class="action-button" @click="testEnabled ? exitTest() : (testEnabled = true, applyTestQuaternion())"
+            :style="testEnabled ? 'background:#e74c3c;color:#fff;' : ''">
+            {{ testEnabled ? '退出测试' : '四元数测试' }}
+          </button>
+          <template v-if="testEnabled">
+            <button class="action-button" @click="testPrev">上一组</button>
+            <span style="font-weight:bold; min-width:80px;">{{ testIndex + 1 }} / {{ testCombos.length }}</span>
+            <button class="action-button" @click="testNext">下一组</button>
+            <span style="font-size:12px; color:#666; max-width:500px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+              {{ testCombos[testIndex]?.label }}
+            </span>
+          </template>
+        </div>
+        <div v-if="testEnabled" style="margin-top:4px; font-size:11px; color:#888;">
+          THREE.Quaternion({{ testCombos[testIndex]?.values.map(v => v.toFixed(4)).join(', ') }})
+        </div>
       </div>
       <!-- <hr/> -->
       <!-- <button @click="addSphere">添加球体</button>
