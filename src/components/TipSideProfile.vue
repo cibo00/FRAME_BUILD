@@ -166,14 +166,18 @@ function createJDICurve() {
 
   if (!J || !D_P1_J || !D || !D_P1_I || !I) return
 
-  const curve = new THREE.CubicBezierCurve3(
+  const curve1 = new THREE.QuadraticBezierCurve3(
     new THREE.Vector3(J.x, J.y, J.z),
     new THREE.Vector3(D_P1_J.x, D_P1_J.y, D_P1_J.z),
+    new THREE.Vector3(D.x, D.y, D.z)
+  )
+  const curve2 = new THREE.QuadraticBezierCurve3(
+    new THREE.Vector3(D.x, D.y, D.z),
     new THREE.Vector3(D_P1_I.x, D_P1_I.y, D_P1_I.z),
     new THREE.Vector3(I.x, I.y, I.z)
   )
 
-  const points = curve.getPoints(50)
+  const points = [...curve1.getPoints(25), ...curve2.getPoints(25)]
   const geometry = new THREE.BufferGeometry().setFromPoints(points)
   const material = new THREE.LineBasicMaterial({ color: 0xff00ff, linewidth: 2 })
   tipProfileCurve = new THREE.Line(geometry, material)
@@ -247,6 +251,12 @@ function setupDragControls() {
   dragControls.addEventListener('drag', (event) => {
     const object = event.object as THREE.Mesh
     const pointName = object.userData.pointName
+
+    // D_P1_J / D_P1_I 只能横向拖动，锁死 Y
+    if (pointName === 'D_P1_J' || pointName === 'D_P1_I') {
+      const origY = props.tipSidePoints.find(p => p.name === pointName)?.y ?? 0
+      object.position.y = origY
+    }
 
     const labelIndex = draggableObjects.indexOf(object)
     if (pointLabels[labelIndex]) {

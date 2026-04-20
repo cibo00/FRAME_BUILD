@@ -156,14 +156,18 @@ function createAGHCurve() {
 
   if (!G || !A_P1_G || !A || !A_P1_H || !H) return
 
-  const curve = new THREE.CubicBezierCurve3(
+  const curve1 = new THREE.QuadraticBezierCurve3(
     new THREE.Vector3(G.x, G.y, G.z),
     new THREE.Vector3(A_P1_G.x, A_P1_G.y, A_P1_G.z),
+    new THREE.Vector3(A.x, A.y, A.z)
+  )
+  const curve2 = new THREE.QuadraticBezierCurve3(
+    new THREE.Vector3(A.x, A.y, A.z),
     new THREE.Vector3(A_P1_H.x, A_P1_H.y, A_P1_H.z),
     new THREE.Vector3(H.x, H.y, H.z)
   )
 
-  const points = curve.getPoints(50)
+  const points = [...curve1.getPoints(25), ...curve2.getPoints(25)]
   const geometry = new THREE.BufferGeometry().setFromPoints(points)
   const material = new THREE.LineBasicMaterial({ color: 0x0000ff, linewidth: 2 })
   rootProfileCurve = new THREE.Line(geometry, material)
@@ -237,6 +241,12 @@ function setupDragControls() {
   dragControls.addEventListener('drag', (event) => {
     const object = event.object as THREE.Mesh
     const pointName = object.userData.pointName
+
+    // A_P1_G / A_P1_H 只能横向拖动，锁死 Y
+    if (pointName === 'A_P1_G' || pointName === 'A_P1_H') {
+      const origY = props.rootSidePoints.find(p => p.name === pointName)?.y ?? 0
+      object.position.y = origY
+    }
 
     const labelIndex = draggableObjects.indexOf(object)
     if (pointLabels[labelIndex]) {
