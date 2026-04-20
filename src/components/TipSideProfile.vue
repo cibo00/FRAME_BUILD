@@ -61,7 +61,17 @@ function initScene() {
   camera.up.set(0, 1, 0)
   camera.lookAt(0, 0, 0)
 
-  renderer = new THREE.WebGLRenderer({ antialias: true })
+  try {
+    renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      failIfMajorPerformanceCaveat: false,
+      powerPreference: 'high-performance',
+    })
+  } catch (e) {
+    console.error('WebGL 创建失败:', e)
+    containerRef.value.innerHTML = '<div style="color:#333;padding:20px;background:#f0f0f0;height:100%;display:flex;align-items:center;justify-content:center;"><p>WebGL 不可用，请检查：<br>1. 确保浏览器已开启硬件加速<br>2. 关闭其他标签页释放 WebGL 上下文<br>3. 尝试使用 Chrome / Edge 最新版</p></div>'
+    return
+  }
   renderer.setSize(width, height)
   containerRef.value.appendChild(renderer.domElement)
 

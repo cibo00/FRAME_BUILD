@@ -95,21 +95,10 @@ function handleTipPointUpdate(pointName: string, newPosition: THREE.Vector3) {
     point.z = newPosition.z
 
     if (pointName === 'D') {
-      const leftControl = tipSidePoints.value.find(p => p.name === 'D_P1_J')
-      const rightControl = tipSidePoints.value.find(p => p.name === 'D_P1_I')
-      if (leftControl && rightControl) {
-        const midpoint = new THREE.Vector3(
-          (leftControl.x + rightControl.x) / 2,
-          (leftControl.y + rightControl.y) / 2,
-          (leftControl.z + rightControl.z) / 2,
-        )
-        point.x = midpoint.x
-        point.y = midpoint.y
-        point.z = midpoint.z
-        newPosition = midpoint
-      }
+      // D 点在尖侧轮廓中固定在原点 (0,0,0)，绝不应回写到主模型坐标
+      // 只有从后端发来的非零坐标才更新主模型
       const sharedPositionPoint = sharedPointsState.positions.find(p => p.name === pointName)
-      if (sharedPositionPoint) {
+      if (sharedPositionPoint && (newPosition.x !== 0 || newPosition.y !== 0 || newPosition.z !== 0)) {
         sharedPositionPoint.x = newPosition.x
         sharedPositionPoint.y = newPosition.y
         sharedPositionPoint.z = newPosition.z
@@ -132,16 +121,25 @@ function regenerateNailModel() {
 }
 
 function resetCameraToProps() {
-  const rotation = props.sceneData?.cameraRotation;
+  // 优先使用后端原始四元数，而非可能被滑条覆盖的 props 值
+  const key = getSceneKey();
+  const rotation = key ? (originalBackendRotationMap.get(key) ?? props.sceneData?.cameraRotation) : props.sceneData?.cameraRotation;
   if (rotation && rotation.length === 4) {
     applyCameraRotationFromArray(rotation);
+    // 同步更新 props，避免切换场景时读到旧的累积值
+    if (props.sceneData) {
+      props.sceneData.cameraRotation = rotation.slice();
+    }
     try {
       saveStateToLocalStorage();
-      console.log('已重置到预设视角:', rotation);
     } catch (e) {}
   }
   // 将滑条归零
-  try { pitchValue.value = 0; rollValue.value = 0; yawValue.value = 0; try { saveCameraDeltaForScene(currentSceneKey.value); } catch(e) {} } catch (e) {}
+  pitchValue.value = 0;
+  rollValue.value = 0;
+  yawValue.value = 0;
+  resetSliderTracking();
+  saveCameraDeltaForScene(currentSceneKey.value);
 }
 
 // 重置图片位置
@@ -234,21 +232,12 @@ function syncSideProfilePointsFromStore() {
     }
   }
 
-  const dPointFromModel = findPositionPoint('D') ?? findBezierPoint('D');
-  const dLeftControl = findSidePoint('D_P1_J') ?? findBezierPoint('D_P1_J');
-  const dRightControl = findSidePoint('D_P1_I') ?? findBezierPoint('D_P1_I');
-  const derivedTipD = dLeftControl && dRightControl
-    ? {
-        x: (dLeftControl.x + dRightControl.x) / 2,
-        y: (dLeftControl.y + dRightControl.y) / 2,
-        z: (dLeftControl.z + dRightControl.z) / 2,
-      }
-    : null;
+  const dPointFromModel = { x: 0, y: 0, z: 0 };
 
   // 更新 tipSidePoints (J, D_P1_J, D, D_P1_I, I)
   for (const sp of tipSidePoints.value) {
     const found = sp.name === 'D'
-      ? derivedTipD ?? dPointFromModel
+      ? dPointFromModel
       : findSidePoint(sp.name) ?? findBezierPoint(sp.name);
     if (found) {
       sp.x = found.x;
@@ -317,6 +306,21 @@ const baseCameraEulerDeg = vueRef<[number, number, number]>([0, 0, 0]);
 
 // 记录上次由后端/props 应用到相机的 cameraRotation（用于避免 props 中 cameraDelta 导致的回写覆盖）
 let lastAppliedCameraRotation: number[] | null = null;
+
+// 存储每个场景的后端原始四元数（不被滑条操作覆盖）
+const originalBackendRotationMap = new Map<string, number[]>();
+
+// 滑条增量跟踪：记录上次 applySlidersToCamera 时的值，用于计算 delta
+let prevPitchVal = 0;
+let prevYawVal = 0;
+let prevRollVal = 0;
+
+// 在模型被设为已知状态（base/场景切换/重置）后调用，将 prev 重置为当前滑条值
+function resetSliderTracking() {
+  prevPitchVal = pitchValue.value;
+  prevYawVal = yawValue.value;
+  prevRollVal = rollValue.value;
+}
 
 // 精度工具：获取数字的小数位数（尽量保留原始字符串表现）
 function getDecimalPlaces(n: number): number {
@@ -400,25 +404,37 @@ let bgLocalOffset: THREE.Vector3 | null = null;
 let bgLocalQuat: THREE.Quaternion | null = null;
 let currentDragged: THREE.Object3D | null = null;
 
-// 滑条增量绕模型自身局部坐标轴应用，保持 pitch/yaw/roll 定义一致
-function composeQuaternionFromBaseAndDeltas(
-  baseQuaternion: THREE.Quaternion,
-  pitchDeg: number,
-  yawDeg: number,
-  rollDeg: number,
-): THREE.Quaternion {
-  const pitchLocalQ = new THREE.Quaternion().setFromAxisAngle(
-    new THREE.Vector3(1, 0, 0), THREE.MathUtils.degToRad(pitchDeg)
-  );
-  const yawLocalQ = new THREE.Quaternion().setFromAxisAngle(
-    new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(yawDeg)
-  );
-  const rollLocalQ = new THREE.Quaternion().setFromAxisAngle(
-    new THREE.Vector3(0, 0, 1), THREE.MathUtils.degToRad(rollDeg)
-  );
+// 滑条增量：计算与上次值的差值，绕模型当前局部轴叠加旋转
+// 不再从 base 重新计算，而是每一步绕模型实时轴微调
+function applySlidersToCamera() {
+  if (!modelGroup) return;
 
-  const localDelta = pitchLocalQ.clone().multiply(yawLocalQ).multiply(rollLocalQ);
-  return baseQuaternion.clone().multiply(localDelta);
+  const dp = pitchValue.value - prevPitchVal;
+  const dy = yawValue.value - prevYawVal;
+  const dr = rollValue.value - prevRollVal;
+
+  // 每个非零 delta 绕模型当前局部轴旋转
+  if (dp !== 0) {
+    modelGroup.quaternion.multiply(
+      new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), THREE.MathUtils.degToRad(dp))
+    );
+  }
+  if (dy !== 0) {
+    modelGroup.quaternion.multiply(
+      new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(dy))
+    );
+  }
+  if (dr !== 0) {
+    modelGroup.quaternion.multiply(
+      new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), THREE.MathUtils.degToRad(dr))
+    );
+  }
+
+  prevPitchVal = pitchValue.value;
+  prevYawVal = yawValue.value;
+  prevRollVal = rollValue.value;
+
+  try { saveCameraDeltaForScene(currentSceneKey.value); } catch (e) {}
 }
 
 function quaternionToEulerDeg(quaternion: THREE.Quaternion): [number, number, number] {
@@ -428,14 +444,17 @@ function quaternionToEulerDeg(quaternion: THREE.Quaternion): [number, number, nu
 }
 
 // ========== 临时测试：四元数排列组合 ==========
-const a = 0.3219897150993347;
-const b = 0.0009193891892209649;
-const c = 0.5552143454551697;
-const d = 0.766849935054779;
-const baseVals = [a, b, c, d];
-const valLabels = ['a', 'b', 'c', 'd'];
+// 5 个场景各自的原始四元数（来自后端），按场景索引 0-4 对应
+const sceneQuatSets: number[][] = [
+  [0.6931163668632507, -0.16852667927742004, 0.5847313404083252, -0.38636472821235657],
+  [0.9735180735588074, 0.11285608261823654, -0.13859626650810242, 0.1425383985042572],
+  [0.9590635895729065, 0.06166302412748337, 0.27378788590431213, -0.03788072243332863],
+  [0.9838452935218811, -0.06144433841109276, -0.1455184817314148, 0.08424626290798187],
+  [0.8539109230041504, -0.3460214138031006, 0.22972474992275238, -0.31357911229133606],
+];
 
-function generateQuaternionCombos(): { values: number[], label: string }[] {
+function generateQuaternionCombos(baseVals: number[]): { values: number[], label: string }[] {
+  const valLabels = ['a', 'b', 'c', 'd'];
   const result: { values: number[], label: string }[] = [];
   const perms = [
     [0,1,2,3],[0,1,3,2],[0,2,1,3],[0,2,3,1],[0,3,1,2],[0,3,2,1],
@@ -463,23 +482,44 @@ function generateQuaternionCombos(): { values: number[], label: string }[] {
   return result;
 }
 
-const testCombos = generateQuaternionCombos();
+// 按场景索引缓存 combos（避免重复计算）
+const combosCache = new Map<number, { values: number[], label: string }[]>();
+function getCombosForScene(sceneIdx: number) {
+  if (!combosCache.has(sceneIdx)) {
+    const vals = sceneQuatSets[sceneIdx] || sceneQuatSets[0];
+    combosCache.set(sceneIdx, generateQuaternionCombos(vals));
+  }
+  return combosCache.get(sceneIdx)!;
+}
+
 const testEnabled = vueRef(false);
 const testIndex = vueRef(0);
+const currentSceneIdx = vueRef(0);
+
+// 场景切换时重置测试索引并刷新 combos
+watch(() => props.activeIndex, (newIdx) => {
+  if (typeof newIdx === 'number') {
+    currentSceneIdx.value = newIdx;
+    testIndex.value = 0;
+    if (testEnabled.value) applyTestQuaternion();
+  }
+});
+
+const testCombos = computed(() => getCombosForScene(currentSceneIdx.value));
 
 function testPrev() {
-  testIndex.value = (testIndex.value - 1 + testCombos.length) % testCombos.length;
+  testIndex.value = (testIndex.value - 1 + testCombos.value.length) % testCombos.value.length;
   applyTestQuaternion();
 }
 
 function testNext() {
-  testIndex.value = (testIndex.value + 1) % testCombos.length;
+  testIndex.value = (testIndex.value + 1) % testCombos.value.length;
   applyTestQuaternion();
 }
 
 function applyTestQuaternion() {
   if (!modelGroup) return;
-  const combo = testCombos[testIndex.value];
+  const combo = testCombos.value[testIndex.value];
   const q = new THREE.Quaternion(combo.values[0], combo.values[1], combo.values[2], combo.values[3]).normalize();
   modelGroup.quaternion.copy(q);
 }
@@ -563,44 +603,25 @@ function clearStaleModelGroupQuaternion() {
 
 function clearLegacyRotationCache() {
   try {
-    const map = getRotationMapFromStorage();
-    let mutated = false;
-    for (const key of Object.keys(map)) {
-      const value = map[key];
-      if (!Array.isArray(value) || value.length !== 4) {
-        delete map[key];
-        mutated = true;
-      }
-    }
-    if (mutated) {
-      localStorage.setItem(ORIGINAL_ROTATION_KEY, JSON.stringify(map));
-    }
+    // 清除已损坏的原始旋转缓存（旧版本可能写入了累积值而非原始值）
+    // 每次挂载时清除，让系统从后端数据重新填充
+    localStorage.removeItem(ORIGINAL_ROTATION_KEY);
   } catch (e) {}
-}
-
-function applySlidersToCamera() {
-  if (!modelGroup) return;
-
-  const rotation = getRotationForScene(currentSceneKey.value);
-  if (!rotation) return;
-
-  const baseQuaternion = buildFrontendQuaternionFromRotation(rotation).quaternion;
-  const targetQuaternion = composeQuaternionFromBaseAndDeltas(
-    baseQuaternion,
-    pitchValue.value,
-    yawValue.value,
-    rollValue.value,
-  );
-
-  baseCameraEulerDeg.value = quaternionToEulerDeg(baseQuaternion);
-  modelGroup.quaternion.copy(targetQuaternion);
-
-  try { saveCameraDeltaForScene(currentSceneKey.value); } catch (e) {}
 }
 
 // 将后端/props 中的四元数旋转数据应用到模型组
 function applyCameraRotationFromArray(newRotation: number[]) {
   if (!modelGroup) return;
+  // 保存后端原始四元数：优先从 localStorage 读取已保存的原始值，避免被累积四元数覆盖
+  const key = getSceneKey();
+  if (key && !originalBackendRotationMap.has(key)) {
+    const storedOriginal = getOriginalRotationForScene(key);
+    if (storedOriginal && Array.isArray(storedOriginal) && storedOriginal.length === 4) {
+      originalBackendRotationMap.set(key, storedOriginal);
+    } else {
+      originalBackendRotationMap.set(key, newRotation.slice());
+    }
+  }
   try {
     const { quaternion: targetQuaternion, baseEulerDeg } = buildFrontendQuaternionFromRotation(newRotation);
     baseCameraEulerDeg.value = baseEulerDeg;
@@ -608,10 +629,12 @@ function applyCameraRotationFromArray(newRotation: number[]) {
     // 应用四元数到模型组
     modelGroup.quaternion.copy(targetQuaternion);
 
-    // 保存真正的原始 rotation 到 localStorage（按场景映射）
+    // 仅在 localStorage 中无记录时保存原始 rotation（不覆盖已有的原始值）
     try {
-      const key = getSceneKey();
-      setRotationMapEntry(key, newRotation);
+      const existingMap = getRotationMapFromStorage();
+      if (!existingMap[key]) {
+        setRotationMapEntry(key, newRotation);
+      }
     } catch (e) {}
 
     // 计算模型旋转相对于标准坐标轴的轴角差并打印
@@ -634,11 +657,21 @@ function applyCameraRotationFromArray(newRotation: number[]) {
   try { lastAppliedCameraRotation = newRotation.slice(); } catch (e) {}
 }
 
-// 保存当前相机状态（不回写 cameraRotation，避免覆盖原始 quaternion 触发循环）
+// 保存当前相机状态：累积四元数写入 props（用于导出），原始基准保持不变，滑条不重置
 function saveCurrentCameraRotationToProps() {
-  if (camera && props.sceneData) {
+  if (camera && props.sceneData && modelGroup) {
     try {
-      // 仅保存 cameraQuaternion 和 localStorage，不修改 props.sceneData.cameraRotation
+      // 将模型当前世界四元数写入 props（用于导出/上传）
+      const q = modelGroup.quaternion;
+      props.sceneData.cameraRotation = [q.x, q.y, q.z, q.w];
+      // 不重置滑条，保持各轴增量值
+      saveCameraDeltaForScene(currentSceneKey.value);
+      // 更新旋转基准为后端原始值（不变）
+      const key = getSceneKey();
+      const original = key ? originalBackendRotationMap.get(key) : null;
+      if (original) {
+        setRotationMapEntry(key, original);
+      }
       saveStateToLocalStorage();
     } catch (e) {
       console.warn('保存相机视角失败', e);
@@ -960,31 +993,29 @@ function loadCameraDeltaForScene(key: string | null) {
   }
 }
 
-// 读取原始后端视角（如果存在）
+// 读取原始后端视角（仅从 localStorage 读取，不 fallback 到 props）
+// props.sceneData.cameraRotation 可能已被滑条累积值覆盖，不可用作"原始值"
 function getOriginalRotationForScene(key: string | null): number[] | null {
   if (!key) return null;
   try {
     const raw = localStorage.getItem(ORIGINAL_ROTATION_KEY);
-    if (!raw) {
-      const arr = props.sceneData && Array.isArray(props.sceneData.cameraRotation) ? props.sceneData.cameraRotation : null;
-      return arr;
-    }
-    else {
-      const map = JSON.parse(raw);
-      const arr = map && Array.isArray(map[key]) ? map[key] : null;
-      return arr;
-    }
-    
+    if (!raw) return null;
+    const map = JSON.parse(raw);
+    const arr = map && Array.isArray(map[key]) ? map[key] : null;
+    return arr;
   } catch (e) {
     return null;
   }
 }
 
 // 将原始后端 quaternion 加载为前端 baseCameraEulerDeg（度）
-// 优先 props，其次 localStorage 原始映射
+// 优先 originalBackendRotationMap，其次 props/localStorage
 function loadOriginalBaseForScene(key: string | null) {
   try {
-    const rotation = getRotationForScene(key);
+    let rotation = key ? (originalBackendRotationMap.get(key) ?? null) : null;
+    if (!rotation) {
+      rotation = getRotationForScene(key);
+    }
     const baseEuler = getBaseEulerDegForRotation(rotation);
     if (baseEuler) {
       baseCameraEulerDeg.value = baseEuler;
@@ -1025,6 +1056,20 @@ watch(() => props.sceneData, (newVal, oldVal) => {
   // 计算新场景 key 并加载
   const newKey = getSceneKey();
   currentSceneKey.value = newKey;
+
+  // 后端数据首次到达时立即保存原始四元数
+  if (newKey && newVal?.cameraRotation && Array.isArray(newVal.cameraRotation) && newVal.cameraRotation.length === 4) {
+    if (!originalBackendRotationMap.has(newKey)) {
+      const storedOriginal = getOriginalRotationForScene(newKey);
+      if (storedOriginal && Array.isArray(storedOriginal) && storedOriginal.length === 4) {
+        originalBackendRotationMap.set(newKey, storedOriginal);
+      } else {
+        originalBackendRotationMap.set(newKey, newVal.cameraRotation.slice());
+        setRotationMapEntry(newKey, newVal.cameraRotation.slice());
+      }
+    }
+  }
+
   loadCameraDeltaForScene(newKey);
   // 加载并设置原始后端角度作为 base
   try { loadOriginalBaseForScene(newKey); } catch (e) {}
@@ -1035,9 +1080,8 @@ watch(() => props.sceneData, (newVal, oldVal) => {
     const rotation = getRotationForScene(newKey);
     if (rotation && modelGroup) {
       applyCameraRotationFromArray(rotation);
-      if (pitchValue.value !== 0 || rollValue.value !== 0 || yawValue.value !== 0) {
-        applySlidersToCamera();
-      }
+      // 先将 prev 值同步到刚加载的滑条值，避免产生错误 delta
+      resetSliderTracking();
     }
   } catch (e) {}
 }, { immediate: true });
@@ -2199,7 +2243,7 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
     // 宽度方向 = Z × AD_unit（垂直于AD轴，对应 Python 归一化后的 Y 轴）
     // 高度方向 = Z 轴（对应 Python 归一化后的 Z 轴）
     const _zHat = new THREE.Vector3(0, 0, 1);
-    const _perpAD = _zHat.clone().cross(AD.clone().normalize()); // Z × ad_unit → "右侧"方向
+    const _perpAD = _zHat.clone().cross(AD.clone().normalize()).negate(); // 视角从A看D，左右取反
 
     const sideA = rootSidePoints.value.find(p => p.name === 'A') ?? { x: 0, y: 0, z: 0 };
     const sideD = tipSidePoints.value.find(p => p.name === 'D') ?? { x: 0, y: 0, z: 0 };
@@ -2238,8 +2282,6 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
         const sweepPts = sweepCurve.getPoints(_numPerCurve);
 
         // 旋转角：符号取反以匹配弧方向
-        // AD_arc_normal = normalize(AD×Z) ≈ -Y；弧本身沿 +Y 方向旋转
-        // 故 rotatePointsAroundAxis 中的角度需取反：tv=0→+margin（A前），tv=1→-(AD_arc+margin)（D后）
         const angle = _angleMgn - tv * (Math.abs(AD_arc) + 2 * _angleMgn);
         const rotated = rotatePointsAroundAxis(sweepPts, O, AD_arc_normal, angle);
         AGH_JDI_pts.push(...rotated);
@@ -2346,7 +2388,20 @@ onMounted(() => {
   camera.setFocalLength(focalLengthMM); // 设置焦距，这会自动更新fov
   camera.updateProjectionMatrix();
 
-  renderer = new THREE.WebGLRenderer({ antialias: true , alpha: true});
+  try {
+    renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: true,
+      failIfMajorPerformanceCaveat: false,
+      powerPreference: 'high-performance',
+    });
+  } catch (e) {
+    console.error('WebGL 创建失败:', e)
+    if (containerRef.value) {
+      containerRef.value.innerHTML = '<div style="color:#fff;padding:20px;background:#808080;height:100%;display:flex;align-items:center;justify-content:center;"><p>WebGL 不可用，请检查：<br>1. 确保浏览器已开启硬件加速<br>2. 关闭其他标签页释放 WebGL 上下文<br>3. 尝试使用 Chrome / Edge 最新版</p></div>'
+    }
+    return
+  }
   renderer.setSize(600, 600);
   renderer.setClearColor(0x808080, 1);
   renderer.toneMapping = THREE.NoToneMapping;
@@ -2357,7 +2412,8 @@ onMounted(() => {
   //  --- 设置相机初始视角 ---
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableZoom = false;
-  controls.enableRotate = false; // <--- 关键修改 1: 禁用旋转
+  controls.enableRotate = false;
+  controls.enablePan = false; // 禁用右键平移
   // 更新controls
   controls.update();
 
@@ -2878,10 +2934,8 @@ watch(
       );
       if (needApply || pitchValue.value !== 0 || rollValue.value !== 0 || yawValue.value !== 0) {
         applyCameraRotationFromArray(newRotation);
-        // 每次切场景都根据当前场景自己的 delta 重新叠加，避免多个场景共用同一显示姿态
-        if (pitchValue.value !== 0 || rollValue.value !== 0 || yawValue.value !== 0) {
-          applySlidersToCamera();
-        }
+        // 将 prev 同步到当前滑条值，避免产生错误 delta
+        resetSliderTracking();
       }
     }
 
@@ -3153,8 +3207,11 @@ watch(
         <button v-for="curveName in curveNames" :key="curveName" @click="selectCurveByName(curveName)" class="curve-button">{{ curveName }}</button>
       </div>
 
-      <!-- 临时测试：四元数排列组合 -->
+      <!-- 临时测试：四元数排列组合（按场景索引切换） -->
       <div style="margin-top:12px; padding:8px; border:2px solid #e74c3c; border-radius:6px; background:#fff8f8;">
+        <div style="font-size:11px; color:#999; margin-bottom:4px;">
+          场景 {{ currentSceneIdx + 1 }} 原始值: [{{ sceneQuatSets[currentSceneIdx]?.map(v => v.toFixed(4)).join(', ') }}]
+        </div>
         <div style="display:flex; align-items:center; gap:8px;">
           <button class="action-button" @click="testEnabled ? exitTest() : (testEnabled = true, applyTestQuaternion())"
             :style="testEnabled ? 'background:#e74c3c;color:#fff;' : ''">
