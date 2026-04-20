@@ -53,5 +53,5 @@ export const sharedPointsState = reactive<{
     ],
     // 参数默认值
     xyRotation: 0.0,
-    aTangent: Math.PI / 10  // 默认 18度
+    aTangent: 86 * Math.PI / 180  // 默认 86度 (∠+Z, AD')
 });

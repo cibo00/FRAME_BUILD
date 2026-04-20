@@ -261,11 +261,11 @@ watch(() => sharedPointsState.bezierPoints, () => {
 
 // 新增：参数控制
 const xyRotationValue = vueRef(sharedPointsState.xyRotation || 0.0)
-const aTangentValue = vueRef(sharedPointsState.aTangent || Math.PI / 10)
+const aTangentValue = vueRef(sharedPointsState.aTangent || 86 * Math.PI / 180)
 
 // 记录后端传来的原始参数值，用于重置按钮
 let originalXyRotation: number = sharedPointsState.xyRotation || 0.0;
-let originalATangent: number = sharedPointsState.aTangent || Math.PI / 10;
+let originalATangent: number = sharedPointsState.aTangent || 86 * Math.PI / 180;
 let isLocalParamChange = false; // 防止本地修改覆盖原始值
 
 // 监听 sharedPointsState 中的 xyRotation 和 aTangent 变化
@@ -2089,29 +2089,29 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
     let AD_arc_radius = 0;
 
     {
-        // 切线约束弧求解（对应 Python _solve_ad_arc_from_tangent）
-        // alpha = A_tangent 角；phi = AD_arc 角；R = span / (cos(alpha) - cos(alpha+phi))
-        const alpha = Math.max(1e-4, Math.min(Math.PI / 2 - 1e-4, aTangentValue.value));
-        const phi_c = Math.max(1e-4, Math.min(Math.PI - 1e-4, Math.abs(AD_arc)));
-        const span = AD.length();
-        const adUnit = AD.clone().normalize();
-        const denom = Math.cos(alpha) - Math.cos(alpha + phi_c);
-        if (Math.abs(denom) > 1e-8 && span / denom > 0) {
-            AD_arc_radius = span / denom;
-            // 圆心 = A + R*cos(alpha)*adUnit - R*sin(alpha)*Z
-            O = A.clone()
-                .addScaledVector(adUnit, AD_arc_radius * Math.cos(alpha))
-                .addScaledVector(new THREE.Vector3(0, 0, 1), -AD_arc_radius * Math.sin(alpha));
-        } else if (AD_arc < Math.PI) {
-            // 回退到旧简单公式
-            const theta_ad_ao = Math.PI / 2 - Math.abs(AD_arc) / 2;
-            AD_arc_radius = span / 2 / Math.cos(theta_ad_ao);
-            const test = theta_ad_ao * AD_rotation;
-            const AO = rotateVector(AD, AD_arc_normal, test);
-            O = A.clone().add(AO.normalize().multiplyScalar(AD_arc_radius));
-        } else {
-            console.error('error: cannot solve arc');
-        }
+        // 新公式：A_tangent = ∠(+Z, AD')，直接确定 D' 后用弦+圆心角求圆
+        const aTangent = Math.max(1e-4, Math.min(Math.PI - 1e-4, aTangentValue.value));
+        const phi = Math.max(1e-4, Math.min(Math.PI - 1e-4, Math.abs(AD_arc)));
+
+        const a_x = A.x, a_z = A.z, d_x = D.x;
+        const span_x = d_x - a_x;
+
+        // Step 1: 用 A_tangent 和 AD x 跨度求 D'
+        const sinBeta = Math.sin(aTangent);
+        const d_prime_z = a_z + span_x * (Math.cos(aTangent) / sinBeta);
+        const dPrime = new THREE.Vector3(d_x, 0, d_prime_z);
+
+        // Step 2: 弦 AD' + 圆心角 phi 求半径
+        const chord = dPrime.clone().sub(A);
+        const chordLen = chord.length();
+        AD_arc_radius = chordLen / (2.0 * Math.sin(phi / 2.0));
+
+        // Step 3: 圆心在弦 AD' 的垂直平分线上
+        const midpoint = A.clone().add(dPrime).multiplyScalar(0.5);
+        const perp = new THREE.Vector3(chord.z, 0, -chord.x);
+        const perpNorm = perp.length();
+        const offset = chordLen / (2.0 * Math.tan(phi / 2.0));
+        O = midpoint.clone().add(perp.clone().multiplyScalar(offset / perpNorm));
     }
 
     const OA = A.clone().sub(O);
@@ -3145,7 +3145,7 @@ watch(
             <input
               type="range"
               min="0"
-              max="90"
+              max="180"
               step="0.00001"
               :value="(aTangentValue * 180 / Math.PI)"
               @input="handleATangentInput"
