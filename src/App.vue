@@ -639,54 +639,20 @@ function composeQuaternionFromBaseAndDeltas(
 }
 
 function getCorrectedQuaternion(scene: any): number[] {
-  const tabScope = getTabScopedId();
-  const deltaMapKey = `frame_build_three_scene_state_v1_${tabScope}_camera_delta_map`;
   const rot = scene.cameraRotation;
 
   if (!rot || rot.length !== 4) {
     throw new Error(`场景 ${scene.backgroundImage || 'unknown'} 缺少有效 quaternion（字段名 cameraRotation）`);
   }
 
-  // 后端四元数协议为 [x, y, z, w]，直接使用
-  const qBase = new THREE.Quaternion(
+  // scene.cameraRotation 已由 ThreeScene.saveCurrentCameraRotationToProps()
+  // 在每次滑条释放时写入累积后的 modelGroup.quaternion，无需再做 delta 合成。
+  // 直接返回即可，保持后端顺序 [x, y, z, w]。
+  return [
     Number(rot[0]) || 0,
     Number(rot[1]) || 0,
     Number(rot[2]) || 0,
     Number(rot[3]) || 1,
-  ).normalize();
-
-  // 读取该场景的滑条增量
-  const sceneKey = scene.backgroundImage || 'default_scene';
-  let pitchDelta = 0, yawDelta = 0, rollDelta = 0;
-  try {
-    const raw = localStorage.getItem(deltaMapKey);
-    if (raw) {
-      const map = JSON.parse(raw);
-      const entry = map[sceneKey];
-      if (entry) {
-        pitchDelta = entry.pitchDelta || 0;
-        yawDelta = entry.yawDelta || 0;
-        rollDelta = entry.rollDelta || 0;
-      }
-    }
-  } catch (e) {}
-
-  // 无增量时直接返回原始四元数
-  if (pitchDelta === 0 && yawDelta === 0 && rollDelta === 0) return rot;
-
-  const correctedModelQuaternion = composeQuaternionFromBaseAndDeltas(
-    qBase,
-    pitchDelta,
-    yawDelta,
-    rollDelta,
-  );
-
-  // 导出时保持后端顺序 [x, y, z, w]
-  return [
-    correctedModelQuaternion.x,
-    correctedModelQuaternion.y,
-    correctedModelQuaternion.z,
-    correctedModelQuaternion.w,
   ];
 }
 
