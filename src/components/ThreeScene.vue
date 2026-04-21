@@ -2288,8 +2288,12 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
                 .addScaledVector(_zHat, ry);
         });
 
-        const sweepCurve = new BezierCurve(interpCtrl);
-        const sweepPts = sweepCurve.getPoints(_numPerCurve);
+        // 两段二次 Bezier（与侧轮廓窗口一致），保证曲面经过 A/D'
+        // interpCtrl 顺序: [G, A_P1_G, A, A_P1_H, H]
+        const halfPts = Math.max(Math.floor(_numPerCurve / 2), 2);
+        const curve1 = new BezierCurve([interpCtrl[0], interpCtrl[1], interpCtrl[2]]); // G → A_P1_G → A
+        const curve2 = new BezierCurve([interpCtrl[2], interpCtrl[3], interpCtrl[4]]); // A → A_P1_H → H
+        const sweepPts = [...curve1.getPoints(halfPts), ...curve2.getPoints(halfPts)];
 
         // 旋转角：从 -margin 扫到 AD_arc+margin，与 Python _filling_surface 一致
         const angle = -_angleMgn + tv * (Math.abs(AD_arc) + 2 * _angleMgn);
