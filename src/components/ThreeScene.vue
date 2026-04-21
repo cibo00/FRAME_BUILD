@@ -612,15 +612,10 @@ function clearLegacyRotationCache() {
 // 将后端/props 中的四元数旋转数据应用到模型组
 function applyCameraRotationFromArray(newRotation: number[]) {
   if (!modelGroup) return;
-  // 保存后端原始四元数：优先从 localStorage 读取已保存的原始值，避免被累积四元数覆盖
+  // 保存后端原始四元数（仅在 Map 中尚无记录时写入）
   const key = getSceneKey();
   if (key && !originalBackendRotationMap.has(key)) {
-    const storedOriginal = getOriginalRotationForScene(key);
-    if (storedOriginal && Array.isArray(storedOriginal) && storedOriginal.length === 4) {
-      originalBackendRotationMap.set(key, storedOriginal);
-    } else {
-      originalBackendRotationMap.set(key, newRotation.slice());
-    }
+    originalBackendRotationMap.set(key, newRotation.slice());
   }
   try {
     const { quaternion: targetQuaternion, baseEulerDeg } = buildFrontendQuaternionFromRotation(newRotation);
@@ -1057,17 +1052,17 @@ watch(() => props.sceneData, (newVal, oldVal) => {
   const newKey = getSceneKey();
   currentSceneKey.value = newKey;
 
-  // 后端数据首次到达时立即保存原始四元数
+  // --- 修复"回到预设视角"串台问题 ---
+  // 每次 sceneData 变化时清空旧的原始旋转缓存（内存 + localStorage），
+  // 让新数据的旋转值重新写入，避免不同数据组之间因 key 相同而读到旧值。
+  originalBackendRotationMap.clear();
+  try { localStorage.removeItem(ORIGINAL_ROTATION_KEY); } catch (e) {}
+  try { localStorage.removeItem(CAMERA_DELTA_MAP_KEY); } catch (e) {}
+
+  // 后端数据到达时保存原始四元数（清空后一定会写入）
   if (newKey && newVal?.cameraRotation && Array.isArray(newVal.cameraRotation) && newVal.cameraRotation.length === 4) {
-    if (!originalBackendRotationMap.has(newKey)) {
-      const storedOriginal = getOriginalRotationForScene(newKey);
-      if (storedOriginal && Array.isArray(storedOriginal) && storedOriginal.length === 4) {
-        originalBackendRotationMap.set(newKey, storedOriginal);
-      } else {
-        originalBackendRotationMap.set(newKey, newVal.cameraRotation.slice());
-        setRotationMapEntry(newKey, newVal.cameraRotation.slice());
-      }
-    }
+    originalBackendRotationMap.set(newKey, newVal.cameraRotation.slice());
+    setRotationMapEntry(newKey, newVal.cameraRotation.slice());
   }
 
   loadCameraDeltaForScene(newKey);
