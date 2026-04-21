@@ -1253,6 +1253,7 @@ const uploadVideo = async (fileObject:any) => {
       <SidePanel
         v-if="scenesData.length > 0"
         :scenesData="scenesData"
+        :groupId="selectedGroupId ?? ''"
         :onSave="saveAllPointsData"
         :isSaving="isSaving"
         :onFetchNext="() => fetchNextDataBatch(true)"

@@ -33,7 +33,8 @@ const props = defineProps<{
     imageScale?: number,  // 图片缩放比例
     AD_arc?: number
   },
-  activeIndex?: number
+  activeIndex?: number,
+  groupId?: string            // 当前数据组 ID，用于区分跨组切换
 }>()
 
 // 内部活动索引（优先使用父组件传入的 activeIndex；保持为 null 则表示未知）
@@ -1042,6 +1043,21 @@ function saveCameraDeltaForScene(key: string | null) {
   // 卸载时保存当前场景的 camera delta
   try { saveCameraDeltaForScene(currentSceneKey.value); } catch (e) {}
 
+// --- 修复"回到预设视角"串台问题 ---
+// 监听 groupId 变化：仅在跨数据组切换时清空旧的原始旋转缓存和滑条 delta，
+// 同组内切换场景时保留已有值。
+watch(() => props.groupId, (newGroupId, oldGroupId) => {
+  if (newGroupId !== oldGroupId) {
+    originalBackendRotationMap.clear();
+    try { localStorage.removeItem(ORIGINAL_ROTATION_KEY); } catch (e) {}
+    try { localStorage.removeItem(CAMERA_DELTA_MAP_KEY); } catch (e) {}
+    // 显式归零滑条，确保切换数据组后滑条不残留旧值
+    pitchValue.value = 0;
+    rollValue.value = 0;
+    yawValue.value = 0;
+  }
+});
+
 watch(() => props.sceneData, (newVal, oldVal) => {
   try {
     // 保存旧场景
@@ -1052,17 +1068,12 @@ watch(() => props.sceneData, (newVal, oldVal) => {
   const newKey = getSceneKey();
   currentSceneKey.value = newKey;
 
-  // --- 修复"回到预设视角"串台问题 ---
-  // 每次 sceneData 变化时清空旧的原始旋转缓存（内存 + localStorage），
-  // 让新数据的旋转值重新写入，避免不同数据组之间因 key 相同而读到旧值。
-  originalBackendRotationMap.clear();
-  try { localStorage.removeItem(ORIGINAL_ROTATION_KEY); } catch (e) {}
-  try { localStorage.removeItem(CAMERA_DELTA_MAP_KEY); } catch (e) {}
-
-  // 后端数据到达时保存原始四元数（清空后一定会写入）
+  // 后端数据首次到达时保存原始四元数（仅在 Map 中无记录时写入，同组内切换场景保留已有值）
   if (newKey && newVal?.cameraRotation && Array.isArray(newVal.cameraRotation) && newVal.cameraRotation.length === 4) {
-    originalBackendRotationMap.set(newKey, newVal.cameraRotation.slice());
-    setRotationMapEntry(newKey, newVal.cameraRotation.slice());
+    if (!originalBackendRotationMap.has(newKey)) {
+      originalBackendRotationMap.set(newKey, newVal.cameraRotation.slice());
+      setRotationMapEntry(newKey, newVal.cameraRotation.slice());
+    }
   }
 
   loadCameraDeltaForScene(newKey);

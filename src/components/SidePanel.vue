@@ -8,6 +8,7 @@ import { onMounted, watch } from 'vue'
 // 接收父组件传递过来的多个场景的数据
 const props = defineProps<{
   scenesData: any[],
+  groupId: string,              // 当前数据组 ID，用于区分跨组切换
   onSave: () => void,           // 保存函数
   isSaving: boolean,            // 保存状态
   onFetchNext?: () => void,     // 获取下一组
@@ -131,6 +132,7 @@ watch(() => props.scenesData, (newVal) => {
         v-if="activeSceneData"
         :sceneData="activeSceneData"
         :activeIndex="activeSceneIndex"
+        :groupId="props.groupId"
       />
     </div>
   </div>
