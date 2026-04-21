@@ -2093,13 +2093,16 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
         const aTangent = Math.max(1e-4, Math.min(Math.PI - 1e-4, aTangentValue.value));
         const phi = Math.max(1e-4, Math.min(Math.PI - 1e-4, Math.abs(AD_arc)));
 
-        const a_x = A.x, a_z = A.z, d_x = D.x;
-        const span_x = d_x - a_x;
+        // AD 在 XY 平面内的完整长度（对应 Python 归一化后的 span_x）
+        const adXY = new THREE.Vector2(D.x - A.x, D.y - A.y);
+        const span = adXY.length();
 
-        // Step 1: 用 A_tangent 和 AD x 跨度求 D'
+        // Step 1: 用 A_tangent 和 AD 跨度求 D'
         const sinBeta = Math.sin(aTangent);
-        const d_prime_z = a_z + span_x * (Math.cos(aTangent) / sinBeta);
-        const dPrime = new THREE.Vector3(d_x, 0, d_prime_z);
+        // D' 在 Z 方向的偏移（A_tangent = ∠(+Z, AD')）
+        const d_prime_z = A.z + span * (Math.cos(aTangent) / sinBeta);
+        // D' 的 XY 位置与 D 相同，Z 由 A_tangent 决定
+        const dPrime = new THREE.Vector3(D.x, D.y, d_prime_z);
 
         // Step 2: 弦 AD' + 圆心角 phi 求半径
         const chord = dPrime.clone().sub(A);
@@ -2108,7 +2111,8 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
 
         // Step 3: 圆心在弦 AD' 的垂直平分线上
         const midpoint = A.clone().add(dPrime).multiplyScalar(0.5);
-        const perp = new THREE.Vector3(chord.z, 0, -chord.x);
+        // 在弧平面内对 chord 做 90° 旋转：perp = chord × AD_arc_normal
+        const perp = new THREE.Vector3().crossVectors(chord, AD_arc_normal);
         const perpNorm = perp.length();
         const offset = chordLen / (2.0 * Math.tan(phi / 2.0));
         O = midpoint.clone().add(perp.clone().multiplyScalar(offset / perpNorm));
@@ -2281,9 +2285,10 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
         const sweepCurve = new BezierCurve(interpCtrl);
         const sweepPts = sweepCurve.getPoints(_numPerCurve);
 
-        // 旋转角：符号取反以匹配弧方向
-        const angle = _angleMgn - tv * (Math.abs(AD_arc) + 2 * _angleMgn);
-        const rotated = rotatePointsAroundAxis(sweepPts, O, AD_arc_normal, angle);
+        // 旋转角：从 -margin 扫到 AD_arc+margin，与 Python _filling_surface 一致
+        const angle = -_angleMgn + tv * (Math.abs(AD_arc) + 2 * _angleMgn);
+        // rotatePointsAroundAxis 不含 -theta（与 rotateVector 不同），需取反以匹配弧方向
+        const rotated = rotatePointsAroundAxis(sweepPts, O, AD_arc_normal, -angle);
         AGH_JDI_pts.push(...rotated);
     }
 
