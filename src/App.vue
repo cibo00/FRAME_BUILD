@@ -524,7 +524,9 @@ function transformOutputData(outputData: OutputData, imageWithMeta: ImageWithMet
 
         // 使用 "类型守卫" 来确保 p 是一个数组，这会消除 TypeScript 错误
         if (Array.isArray(p) && p.length >= 2) {
-            allPoints[key] = { x: p[0], y: p[1], z: p.length >= 3 ? p[2] : 0 };
+            // 对 ZERO_Z_COMPAT 点强制 z 置零（保存文件可能带 z，读取时忽略）
+            const z = ZERO_Z_COMPAT_POINT_NAMES.has(key) ? 0 : (p.length >= 3 ? p[2] : 0);
+            allPoints[key] = { x: p[0], y: p[1], z };
         }
         
     }
@@ -656,22 +658,60 @@ function getCorrectedQuaternion(scene: any): number[] {
   ];
 }
 
-// 从 scenesData 构建 output_data（后端格式，点名为 key，坐标为 [x, y]）
+// 与 nailmodel.py ZERO_Z_COMPAT_POINT_NAMES 一致的 18 个点名（使用保存时的名称）
+const ZERO_Z_COMPAT_POINT_NAMES = new Set([
+  'A', 'B', 'C', 'D', 'E', 'F',
+  'A_P_AF', 'D_P_CD', 'B_P_AB', 'F_P_AF',
+  'AB_P2', 'AB_P3', 'BC_P2', 'CD_P1',
+  'AF_P2', 'AF_P3', 'FE_P2', 'ED_P1',
+]);
+
+/**
+ * 从曲面点中通过 XY 最近邻采样恢复 Z 坐标（仿照 nailmodel.py get_input_points / regularizeEdgeZ）
+ * @param x 标注点 x 坐标
+ * @param y 标注点 y 坐标
+ * @param surfacePoints 曲面点数组
+ * @returns 最近曲面点的 z 值，曲面为空时返回 0
+ */
+function recoverZFromSurface(x: number, y: number, surfacePoints: { x: number, y: number, z: number }[]): number {
+  if (surfacePoints.length === 0) return 0;
+  let closestZ = 0;
+  let minDistSq = Infinity;
+  for (const sp of surfacePoints) {
+    const dx = x - sp.x;
+    const dy = y - sp.y;
+    const distSq = dx * dx + dy * dy;
+    if (distSq < minDistSq) {
+      minDistSq = distSq;
+      closestZ = sp.z;
+    }
+  }
+  return closestZ;
+}
+
+// 从 scenesData 构建 output_data（后端格式，点名为 key，坐标为 [x, y] 或 [x, y, z]）
 function buildOutputData(): Record<string, any> {
   const nameReplaceMap: { [key: string]: string } = {
     'AB_P4': 'B_P_AB', 'CD_P2': 'D_P_CD', 'AF_P1': 'A_P_AF', 'AF_P4': 'F_P_AF'
   };
 
   const output: Record<string, any> = {};
+  const surface = sharedPointsState.surfacePoints;
 
-  // 合并 positions 和 bezierPoints（仅取 x, y）
+  // 合并 positions 和 bezierPoints
   const allPoints = [...sharedPointsState.positions, ...sharedPointsState.bezierPoints];
   for (const p of allPoints) {
     const name = nameReplaceMap[p.name] || p.name;
-    output[name] = [p.x, p.y];
+    if (ZERO_Z_COMPAT_POINT_NAMES.has(name) && surface.length > 0) {
+      // 对 ZERO_Z_COMPAT 点通过曲面投影恢复 Z 坐标
+      const recoveredZ = recoverZFromSurface(p.x, p.y, surface);
+      output[name] = [p.x, p.y, recoveredZ];
+    } else {
+      output[name] = [p.x, p.y];
+    }
   }
 
-  // 侧轮廓控制点
+  // 侧轮廓控制点（不在 ZERO_Z_COMPAT 中，保持 [x, y]）
   if (sharedPointsState.sideProfilePoints) {
     for (const p of sharedPointsState.sideProfilePoints) {
       output[p.name] = [p.x, p.y];

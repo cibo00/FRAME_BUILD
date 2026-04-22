@@ -32,6 +32,8 @@ export const sharedPointsState = reactive<{
     fingerType?: string | null,
     focalLengthMm?: number | null,
     sensorWidthMm?: number | null,
+    // 曲面点数据（由 ThreeScene 生成，用于保存时恢复标注点 Z 坐标）
+    surfacePoints: { x: number, y: number, z: number }[],
 }>( {
     // 初始化数据（您可以从外部加载默认值）
     positions: [
@@ -51,6 +53,8 @@ export const sharedPointsState = reactive<{
         { name: 'D_P1_J', x: -3.0, y: 0.0, z: 0 },
         { name: 'D_P1_I', x: 3.0, y: 0.0, z: 0 },
     ],
+    // 曲面点（默认空，由 ThreeScene 生成后同步）
+    surfacePoints: [],
     // 参数默认值
     xyRotation: 0.0,
     aTangent: 86 * Math.PI / 180  // 默认 86度 (∠+Z, AD')

@@ -2309,6 +2309,8 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
     const toSamplePoints = [...clipped_AGH_JDI];
 
     allMeshPointsForExport.value = toSamplePoints;
+    // 同步曲面点到共享状态，供 App.vue 保存时恢复标注点 Z 坐标
+    sharedPointsState.surfacePoints = toSamplePoints.map(p => ({ x: p.x, y: p.y, z: p.z }));
 
      // 绘制填充点
      if (toSamplePoints.length > 0) {
