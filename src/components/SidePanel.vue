@@ -13,6 +13,7 @@ const props = defineProps<{
   isSaving: boolean,            // 保存状态
   onFetchNext?: () => void,     // 获取下一组
   onUploadResult?: () => void,  // 上传结果
+  onUploadTestdata?: () => void, // 上传testdata.json
 }>()
 
 const ACTIVE_INDEX_KEY = `frame_build_active_scene_index_v1_${getTabScopedId()}`
@@ -120,6 +121,14 @@ watch(() => props.scenesData, (newVal) => {
         上传结果
       </button>
 
+      <button
+        v-if="props.onUploadTestdata"
+        @click="props.onUploadTestdata"
+        class="action-button upload-testdata-btn"
+      >
+        上传testdata.json
+      </button>
+
       <div class="pagination">
         <button @click="prevScene" :disabled="activeSceneIndex === 0">上一页</button>
         <span class="scene-info">场景 {{ activeSceneIndex + 1 }} / {{ props.scenesData.length }}</span>
@@ -200,6 +209,12 @@ watch(() => props.scenesData, (newVal) => {
 .action-button:disabled {
     background-color: #cccccc;
     cursor: not-allowed;
+}
+.upload-testdata-btn {
+    background-color: #6f42c1;
+}
+.upload-testdata-btn:hover {
+    background-color: #5a32a3;
 }
 .pagination {
   display: flex;

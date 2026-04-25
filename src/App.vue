@@ -93,6 +93,7 @@ const fileName = ref('');
 // 创建一个 ref 来引用模板中的 <input> 元素
 // const fileInputRef = ref(null);
 const fileInputRef = ref<HTMLInputElement | null>(null)
+const testdataInputRef = ref<HTMLInputElement | null>(null)
 
 // 注册数据
 const register_data = ref ([{username: '',
@@ -1254,6 +1255,38 @@ const uploadVideo = async (fileObject:any) => {
   }
 }
 
+// --- testdata.json 上传 ---
+const triggerTestdataUpload = () => {
+  if (testdataInputRef.value) {
+    testdataInputRef.value.value = '';
+    testdataInputRef.value.click();
+  }
+};
+
+const handleTestdataSelected = (event: any) => {
+  const files = event.target.files;
+  if (!files || files.length === 0) return;
+  const file = files[0];
+  if (!file.name.endsWith('.json') || (file.type && file.type !== 'application/json' && file.type !== '')) {
+    alert('请选择 JSON 文件（.json）');
+    return;
+  }
+  uploadTestdata(file);
+};
+
+const uploadTestdata = async (file: File) => {
+  const formData = new FormData();
+  formData.append('testdata', file);
+  try {
+    const response = await api_vedio.post('/api/upload-testdata', formData);
+    alert('testdata.json 上传成功！');
+    console.log('上传testdata成功:', response.data);
+  } catch (error) {
+    alert('上传失败，请检查控制台获取详情。');
+    console.error('上传testdata失败:', error);
+  }
+};
+
 // <h3>注册信息</h3>
 //     <input v-model="register_data[0].username" placeholder="用户名" />
 //     <input v-model="register_data[0].password" type="password" placeholder="密码" />
@@ -1298,9 +1331,17 @@ const uploadVideo = async (fileObject:any) => {
         :isSaving="isSaving"
         :onFetchNext="() => fetchNextDataBatch(true)"
         :onUploadResult="Save_Building_Result"
+        :onUploadTestdata="triggerTestdataUpload"
       />
       <div v-else-if="isLoading" class="loading">场景加载中...</div>
     </div>
+    <input
+      ref="testdataInputRef"
+      type="file"
+      accept=".json,application/json"
+      @change="handleTestdataSelected"
+      style="display: none"
+    />
   </div>
 </template>
 
