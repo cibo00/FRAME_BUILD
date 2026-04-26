@@ -787,6 +787,7 @@ let dragControls: DragControls | undefined;
 const dragTargetPlane: THREE.Mesh | null = null;
 let draggableObjects: THREE.Mesh[] = [];
 let backgroundPlane: THREE.Mesh | null = null; // <-- 添加这一行
+let bgOriginPivot: { basePos: THREE.Vector3; baseScale: number; pivotLocal: THREE.Vector3 } | null = null;
 let lastLoadedBgImage: string = ''; // 记录上次加载的背景图片URL，避免重复重建
 const bgCenter: THREE.Vector3 = new THREE.Vector3(); // 背景图片中心（独立于 dataCenter）
 //let draggableImage: THREE.Mesh[] = []; // <-- 新增: 存储背景图片 Mesh
@@ -1120,9 +1121,15 @@ function setBackgroundDraggable(enabled: boolean) {
 // 当用户切换 allowBackgroundDrag 时，更新 draggableObjects
 watch(allowBackgroundDrag, (val) => setBackgroundDraggable(val));
 
-// 当 imageScale 改变时，更新 backgroundPlane 的缩放
+// 当 imageScale 改变时，更新 backgroundPlane 的缩放，同时补偿位置使原点投影保持不动
 watch(imageScale, (val) => {
   if (backgroundPlane) {
+    if (bgOriginPivot) {
+      const { basePos, baseScale, pivotLocal } = bgOriginPivot;
+      // P(s) = basePos + Q * ((baseScale - s) * pivotLocal)
+      const offset = pivotLocal.clone().multiplyScalar(baseScale - val).applyQuaternion(backgroundPlane.quaternion);
+      backgroundPlane.position.copy(basePos.clone().add(offset));
+    }
     backgroundPlane.scale.set(val, val, 1);
   }
   // 更新场景数据
@@ -2253,7 +2260,7 @@ function generateCustomBezierCurves(shouldDeselectAll: boolean = true) {
     // 宽度方向 = Z × AD_unit（垂直于AD轴，对应 Python 归一化后的 Y 轴）
     // 高度方向 = Z 轴（对应 Python 归一化后的 Z 轴）
     const _zHat = new THREE.Vector3(0, 0, 1);
-    const _perpAD = _zHat.clone().cross(AD.clone().normalize()).negate(); // 视角从A看D，左右取反
+    const _perpAD = _zHat.clone().cross(AD.clone().normalize()); // 视角从D看A，原始方向
 
     const sideA = rootSidePoints.value.find(p => p.name === 'A') ?? { x: 0, y: 0, z: 0 };
     const sideD = tipSidePoints.value.find(p => p.name === 'D') ?? { x: 0, y: 0, z: 0 };
@@ -2464,7 +2471,12 @@ onMounted(() => {
   // 将创建的控制器实例赋给在顶层声明的变量
   
   dragControls = new DragControls(draggableObjects, camera, renderer.domElement);
-  
+
+  // 禁止右键触发拖拽（capture 阶段拦截，在 DragControls 处理之前）
+  renderer.domElement.addEventListener('pointerdown', (e) => {
+    if (e.button === 2) e.stopImmediatePropagation();
+  }, true);
+
 
   // --- 事件监听器 ---
   // 现在这里的 dragControls 和 dragControls_Bezier 引用的是正确的顶层变量
@@ -2633,6 +2645,17 @@ onMounted(() => {
                 z: draggedMesh.position.z,
             };
             console.log(`图片位置已保存: x=${draggedMesh.position.x}, y=${draggedMesh.position.y}, z=${draggedMesh.position.z}`);
+          // 拖拽后更新缩放锚点基准
+          {
+            const invQ = backgroundPlane!.quaternion.clone().invert();
+            const pL = backgroundPlane!.position.clone().negate().applyQuaternion(invQ);
+            pL.z = 0;
+            bgOriginPivot = {
+              basePos: backgroundPlane!.position.clone(),
+              baseScale: imageScale.value,
+              pivotLocal: pL,
+            };
+          }
           // 更新独立的背景中心（不影响 dataCenter）
           try {
             bgCenter.set(draggedMesh.position.x, draggedMesh.position.y, draggedMesh.position.z);
@@ -3022,6 +3045,8 @@ watch(
         camera.getWorldDirection(cameraDirection);
 
         // 背景位置：优先恢复保存的位置，否则初始化为 dataCenter 前方
+        backgroundPlane.quaternion.copy(camera.quaternion);
+
         if (newData.backgroundPlanePosition) {
           backgroundPlane.position.set(
             newData.backgroundPlanePosition.x,
@@ -3033,14 +3058,23 @@ watch(
           backgroundPlane.position.copy(dataCenter.value.clone().add(cameraDirection.clone().multiplyScalar(planeDistance)));
         }
 
-        //   让平面的旋转姿态与相机完全相同
-        backgroundPlane.quaternion.copy(camera.quaternion);
-
         //   将平面添加到世界场景中
         scene.add(backgroundPlane);
 
         // 设置初始scale
         backgroundPlane.scale.set(imageScale.value, imageScale.value, 1);
+
+        // 记录原点缩放锚点基准（供 imageScale watch 使用）
+        {
+          const invQ = backgroundPlane.quaternion.clone().invert();
+          const pL = backgroundPlane.position.clone().negate().applyQuaternion(invQ);
+          pL.z = 0;
+          bgOriginPivot = {
+            basePos: backgroundPlane.position.clone(),
+            baseScale: imageScale.value,
+            pivotLocal: pL,
+          };
+        }
 
         // 设置背景是否可拖拽
         if (backgroundPlane) {
@@ -3196,12 +3230,12 @@ watch(
       </div>
       <div class="slider-control">
         <label for="image-scale-slider">图片尺寸 (Image Scale): {{ imageScale.toFixed(2) }}x</label>
-        <input 
+        <input
           id="image-scale-slider"
-          type="range" 
-          min="0.1" 
-          max="5" 
-          step="0.01" 
+          type="range"
+          min="0.5"
+          max="2.0"
+          step="0.01"
           v-model.number="imageScale" 
         />
       </div>
